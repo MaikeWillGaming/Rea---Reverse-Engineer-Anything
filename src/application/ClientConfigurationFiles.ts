@@ -635,6 +635,27 @@ export const readEffectiveClientRegistrationConfiguration = async (
     : native;
 };
 
+/** The Claude Code files MiMo Code imports from, in the order a later one replaces an earlier one. */
+const claudeCodeImportCandidates = (
+  userPath: string,
+  scoped: boolean,
+  projectDirectory: string | undefined,
+  platform: NodeJS.Platform,
+): readonly { path: string; scope?: ClientRegistrationScope }[] => [
+  { path: userPath, ...(scoped ? { scope: "user" as const } : {}) },
+  ...(projectDirectory === undefined
+    ? []
+    : [
+        {
+          path: (platform === "win32" ? win32 : posix).join(
+            projectDirectory,
+            ".claude.json",
+          ),
+          scope: "project" as const,
+        },
+      ]),
+];
+
 /**
  * MiMo Code imports Claude Code's `rea` entry only when none of its own
  * layers declares one: the user's file, then the project's, which replaces
@@ -662,23 +683,12 @@ const withClaudeCodeImport = async (
     effectiveClientServer(native.document, name) !== undefined
   )
     return ok(native);
-  const candidates: { path: string; scope?: ClientRegistrationScope }[] = [
-    {
-      path: userPath,
-      ...(native.scope === undefined ? {} : { scope: "user" }),
-    },
-    ...(projectDirectory === undefined
-      ? []
-      : [
-          {
-            path: (platform === "win32" ? win32 : posix).join(
-              projectDirectory,
-              ".claude.json",
-            ),
-            scope: "project" as const,
-          },
-        ]),
-  ];
+  const candidates = claudeCodeImportCandidates(
+    userPath,
+    native.scope !== undefined,
+    projectDirectory,
+    platform,
+  );
   let imported:
     | {
         readonly path: string;
@@ -709,8 +719,6 @@ const withClaudeCodeImport = async (
     document,
     validation: "effective",
   });
-  if (failure !== undefined)
-    return err({ ...failure, ...(scope === undefined ? {} : { scope }) });
   return ok({
     document,
     configPath: path,
@@ -736,6 +744,14 @@ const withClaudeCodeImport = async (
     ...(native.projectInspection === undefined
       ? {}
       : { projectInspection: native.projectInspection }),
+    ...(failure === undefined
+      ? {}
+      : {
+          environmentError: {
+            ...failure,
+            ...(scope === undefined ? {} : { scope }),
+          },
+        }),
     importedFrom: "claude_code",
   });
 };

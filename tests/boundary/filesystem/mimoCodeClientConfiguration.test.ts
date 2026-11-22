@@ -444,8 +444,11 @@ describe("Update maintenance of MiMo Code's Claude Code import", () => {
     const invalid = {
       client: "mimo_code",
       config_path: imported,
+      command_identity: "owned",
       state: "invalid",
-      remediation: expect.stringContaining("REA_ANALYSIS_PROVIDER"),
+      remediation: expect.stringMatching(
+        /^MiMo Code imports this rea entry from Claude Code.*REA_ANALYSIS_PROVIDER/,
+      ),
     };
     expect(await doctor(home, {}, "user")).toMatchObject(invalid);
     const scope = await existingMaintenanceScope(

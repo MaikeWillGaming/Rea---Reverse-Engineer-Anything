@@ -438,19 +438,29 @@ export const readClientRegistrationInspections = async (
               options.platform,
             )
           : undefined;
-      if (
-        registrationEnvironment !== undefined &&
-        !registrationEnvironment.ok
-      ) {
-        record({
-          client: client.name,
-          config_path: configPath,
-          ...(selectedScope === undefined ? {} : { scope: selectedScope }),
-          command: [],
-          command_identity: commandFacts.identity,
-          state: "invalid",
-          remediation: registrationEnvironment.error.message,
-        });
+      const { importedFrom } = configuration.value;
+      const importNote =
+        importedFrom === undefined
+          ? undefined
+          : `MiMo Code imports this rea entry from Claude Code's ${configPath} because none of its own configuration defines rea; rea setup --client ${client.name} gives it its own entry.`;
+      const environmentFailure = registrationEnvironmentFailure(
+        registrationEnvironment,
+        configuration.value,
+      );
+      if (environmentFailure !== undefined) {
+        record(
+          {
+            client: client.name,
+            config_path: configPath,
+            ...(selectedScope === undefined ? {} : { scope: selectedScope }),
+            command: [],
+            command_identity: commandFacts.identity,
+            state: "invalid",
+            remediation: withImportNote(importNote, environmentFailure),
+          },
+          "unknown",
+          importedFrom,
+        );
         continue;
       }
       const packageReference = commandFacts.package?.reference;
@@ -485,11 +495,6 @@ export const readClientRegistrationInspections = async (
       )
         ? undefined
         : options.observeProbeSetting;
-      const { importedFrom } = configuration.value;
-      const importNote =
-        importedFrom === undefined
-          ? undefined
-          : `MiMo Code imports this rea entry from Claude Code's ${configPath} because none of its own configuration defines rea; rea setup --client ${client.name} gives it its own entry.`;
       const status = configuredStatus({
         client: effectiveClient,
         command,
@@ -660,6 +665,18 @@ const registrationAligned = ({
     ? "aligned"
     : "stale";
 };
+
+/** The client's own environment check decides first; a read that kept the launcher may report one too. */
+const registrationEnvironmentFailure = (
+  checked: Result<unknown, ConfigurationError> | undefined,
+  { environmentError }: EffectiveClientRegistrationConfiguration,
+): string | undefined =>
+  checked !== undefined && !checked.ok
+    ? checked.error.message
+    : environmentError?.detail;
+
+const withImportNote = (note: string | undefined, message: string): string =>
+  note === undefined ? message : `${note} ${message}`;
 
 /** A client that rewrites its file from memory must be quit before setup. */
 const remediation = (
