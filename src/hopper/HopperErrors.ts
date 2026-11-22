@@ -293,12 +293,20 @@ export class HopperRemoteError extends HopperError {
   }
 
   override ownPresentation(): AnalysisErrorOwnPresentation {
-    const lookupMiss = this.diagnosticType === "selector_not_found";
+    const isProcedureOp =
+      this.operation?.startsWith("procedure_") === true ||
+      this.operation === "decompile" ||
+      this.operation === "resolve_containing_procedure";
+    const lookupMiss =
+      this.diagnosticType === "selector_not_found" ||
+      (this.diagnosticType === "invalid_request" && isProcedureOp);
     return {
       ...hopperRemoteClassification(this.diagnosticType),
       message: `Hopper ${this.operation ?? "analysis"} failed (${String(this.code)}, ${this.diagnosticType}): ${this.safeMessage}`,
       remediation: lookupMiss
-        ? "Choose an observed name or address from the current Hopper document. For procedures, use CLI rea search <path> . --kind procedures --mode regex --provider hopper or MCP list_procedures. For other symbols, use list_names."
+        ? isProcedureOp
+          ? 'Hopper couldn\'t resolve the procedure in this document. Search the procedure inventory with `search_procedures` using `{"pattern":"..."}` or `list_procedures`. If you find a matching entry procedure, retry with its address or observed name. An empty search leaves the entry unresolved.'
+          : "Choose an observed name or address from the current Hopper document. For procedures, use list_procedures or search_procedures. For other symbols, use list_names."
         : this.diagnosticType === "invalid_request"
           ? "Correct the reported address, document, or arguments and retry."
           : "Review the Hopper diagnostic details and correct the request or target; run `rea doctor` if the provider itself is failing. Repeating the unchanged request is not expected to succeed.",
@@ -308,11 +316,9 @@ export class HopperRemoteError extends HopperError {
         diagnostic_type: this.diagnosticType,
         ...(lookupMiss
           ? {
-              related_operations: [
-                "list_procedures",
-                "search_procedures",
-                "list_names",
-              ],
+              related_operations: isProcedureOp
+                ? ["search_procedures", "list_procedures"]
+                : ["list_procedures", "search_procedures", "list_names"],
             }
           : {}),
         ...(this.operation === undefined ? {} : { operation: this.operation }),

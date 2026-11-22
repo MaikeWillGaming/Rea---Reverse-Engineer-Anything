@@ -128,3 +128,27 @@ it.each([
     }
   },
 );
+
+it("emits actionable procedure lookup remediation on missing function", async () => {
+  const producer = new RecordingIdaMcp(target, "headless");
+  producer.overrideCall = (tool) =>
+    tool === "lookup_funcs"
+      ? [{ query: "missing_fn", fn: null, error: "Not found" }]
+      : undefined;
+  const runner = new IdaOperationRunner(producer, "modern");
+  let caughtError: unknown;
+  try {
+    await runner.resolve("missing_fn", "procedure_pseudo_code");
+  } catch (err) {
+    caughtError = err;
+  }
+  expect(caughtError).toMatchObject({
+    _tag: "AnalysisInputError",
+    operation: "procedure_pseudo_code",
+    conformsToInputContract: true,
+    remediationAction: expect.stringContaining("search_procedures"),
+  });
+  expect((caughtError as any).remediationAction).toContain(
+    'Use search_procedures with {"pattern":"missing_fn"}',
+  );
+});

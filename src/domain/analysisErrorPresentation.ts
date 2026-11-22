@@ -244,7 +244,9 @@ export const analysisErrorRemediationAction = (
     );
     const baseAction =
       error.remediationAction ??
-      `Read the declared input schema or CLI usage for ${error.operation}; if using MCP and the catalog may be stale, call tools/list. Correct the listed fields, then retry. Do not repeat the unchanged call.`;
+      (error.conformsToInputContract
+        ? `The requested item could not be resolved in the target or provider inventory. Check candidate names or addresses with inventory search tools, then retry with an observed coordinate. Do not repeat the unchanged call.`
+        : `Read the declared input schema or CLI usage for ${error.operation}; if using MCP and the catalog may be stale, call tools/list. Correct the listed fields, then retry. Do not repeat the unchanged call.`);
     return mistakeRemediation === undefined
       ? baseAction
       : `${mistakeRemediation} ${baseAction}`;
