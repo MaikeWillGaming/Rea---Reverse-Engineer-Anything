@@ -58,6 +58,7 @@ import {
   skillDestinationSelection,
 } from "./SetupSkill.js";
 import { dshDocument } from "./DshCordisPatch.js";
+import { mimoCodeClaudeCodeImport } from "./MimoCodeClaudeImport.js";
 import {
   isAbsentClientConfigPath,
   resolveClientConfigTransactionPath,
@@ -650,6 +651,9 @@ export const systemUninstallHost = (
   // Set with the client list: the package view that redirects this
   // process's AppData writes, if any.
   let redirection: MsixPackageView | undefined;
+  // Set with the client list: the Claude Code row whose removal MiMo Code's
+  // import of the same file follows.
+  let claudeCode: SetupClient | undefined;
   const clientWriteBlocker = (client: SetupClient): string | undefined =>
     registrationWriteBlocker(client, "uninstall") ??
     redirectedWriteBlocker(redirection, [client.configPath], "uninstall");
@@ -664,6 +668,7 @@ export const systemUninstallHost = (
         systemPaths,
       );
       redirection = appDataRedirection(supported);
+      claudeCode = supported.find(({ name }) => name === "claude_code");
       if (projectDirectory !== undefined) {
         const directory =
           await requireProjectUninstallDirectory(projectDirectory);
@@ -821,10 +826,12 @@ export const systemUninstallHost = (
               );
           }
         }
-        // OpenCode and Kilo merge every layer, so removing REA's entries can
-        // expose or change an entry another layer keeps.
+        // OpenCode, Kilo and MiMo Code merge every layer, so removing REA's
+        // entries can expose or change an entry another layer keeps.
         if (
-          (client.format === "opencode" || client.format === "kilo") &&
+          (client.format === "opencode" ||
+            client.format === "kilo" ||
+            client.format === "mimo_code") &&
           (removal.value.removeNative || removal.value.legacyPath !== undefined)
         ) {
           const originalLayers: ClientConfigurationSource[] = [];
@@ -891,8 +898,20 @@ export const systemUninstallHost = (
               "failed",
               client.format === "opencode"
                 ? "Removing REA's registration would activate or change an unowned OpenCode registration in another configuration layer, including a possible V1 fallback; no change was made. Remove or replace that registration manually, then rerun uninstall."
-                : `Removing REA's registration would activate or change a registration that another Kilo configuration layer${inline === undefined ? "" : ` or ${inline.origin}, which REA does not edit,`} keeps in effect; no change was made. Remove or replace that registration manually, then rerun uninstall.`,
+                : `Removing REA's registration would activate or change a registration that another ${client.format === "kilo" ? "Kilo" : "MiMo Code"} configuration layer${inline === undefined ? "" : ` or ${inline.origin}, which REA does not edit,`} keeps in effect; no change was made. Remove or replace that registration manually, then rerun uninstall.`,
             );
+          if (
+            remaining === undefined &&
+            client.claudeCodeImportPath !== undefined
+          ) {
+            const exposed = await claudeCodeImportExposure(
+              client,
+              client.claudeCodeImportPath,
+              claudeCode,
+              fileSystem,
+            );
+            if (exposed !== undefined) return exposed;
+          }
         }
         // REA writes only the user layer. If the read-only lower layers alone
         // still define an entry that is not disabled, removal would leave it
@@ -1031,6 +1050,54 @@ const enabledRegistration = (entry: unknown): boolean =>
     "enabled" in entry &&
     entry.enabled === false
   );
+
+/**
+ * MiMo Code imports Claude Code's enabled `rea` entry once none of its own
+ * layers declares one. Removing REA's MiMo Code entries must not hand it an
+ * entry this uninstall keeps; an entry Claude Code's own removal takes is
+ * gone for both.
+ */
+const claudeCodeImportExposure = async (
+  client: SetupClient,
+  path: string,
+  claudeCode: SetupClient | undefined,
+  fileSystem: UninstallFileSystem,
+): Promise<UninstallItem | undefined> => {
+  let text: string;
+  try {
+    text = await fileSystem.readText(path);
+  } catch (cause: unknown) {
+    return isMissing(cause)
+      ? undefined
+      : item(
+          client.name,
+          "failed",
+          `Claude Code's ${path}, whose rea entry MiMo Code imports once REA's own entry is removed, could not be read; no change was made. Check its permissions, then rerun uninstall.`,
+        );
+  }
+  if (!enabledRegistration(mimoCodeClaudeCodeImport(text))) return undefined;
+  if (
+    claudeCode !== undefined &&
+    claudeCode.configPathError === undefined &&
+    claudeCode.configPath === path
+  ) {
+    try {
+      const removal = clientRegistrationRemoval(
+        parseClientConfiguration(text, "claude_code"),
+        text,
+        claudeCode,
+      );
+      if (removal.ok && removal.value.removeNative) return undefined;
+    } catch {
+      // Claude Code's own inspection reports a file it cannot parse.
+    }
+  }
+  return item(
+    client.name,
+    "failed",
+    `Removing REA's MiMo Code registration would let MiMo Code import the rea entry in Claude Code's ${path}, which this uninstall keeps; no change was made. Remove or rename that entry, or set MIMOCODE_DISABLE_CLAUDE_CODE_MCP=1 for MiMo Code and REA, then rerun uninstall.`,
+  );
+};
 
 /** Whether removal would change this configuration. */
 const registrationPresent = (parsed: ClientConfigurationDocument): boolean => {

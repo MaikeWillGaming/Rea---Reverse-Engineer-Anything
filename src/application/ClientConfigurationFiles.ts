@@ -26,6 +26,7 @@ import { lstat, realpath } from "node:fs/promises";
 import { posix, win32 } from "node:path";
 import { isQualifiedCallerPath } from "../filesystem/callerPath.js";
 import { isAbsentClientConfigPath } from "./ClientConfigPath.js";
+import { mimoCodeClaudeCodeImport } from "./MimoCodeClaudeImport.js";
 
 export type ClientRegistrationScope = "user" | "project";
 
@@ -588,6 +589,8 @@ export interface EffectiveClientRegistrationConfiguration {
   }[];
   /** Whether proposed project edits leave the original selected row in effect. */
   readonly preservesOriginalRegistration?: true;
+  /** The effective entry is MiMo Code's import of Claude Code's entry at `configPath`. */
+  readonly importedFrom?: "claude_code";
 }
 
 /** Reading an effective registration does not authorize probes from project settings. */
@@ -616,9 +619,131 @@ export const readEffectiveClientRegistrationConfiguration = async (
 ): Promise<
   Result<EffectiveClientRegistrationConfiguration, ClientConfigurationFileError>
 > => {
+  const native = await readNativeClientRegistrationConfiguration(
+    client,
+    resources,
+    platform,
+    project,
+  );
+  return native.ok && client.claudeCodeImportPath !== undefined
+    ? withClaudeCodeImport(native.value, client.claudeCodeImportPath, {
+        resources,
+        platform,
+        projectDirectory: project?.projectDirectory,
+      })
+    : native;
+};
+
+/**
+ * MiMo Code imports Claude Code's `rea` entry only when none of its own
+ * layers declares one: the user's file, then the project's, which replaces
+ * the user import. See `MimoCodeClaudeImport`.
+ */
+const withClaudeCodeImport = async (
+  native: EffectiveClientRegistrationConfiguration,
+  userPath: string,
+  {
+    resources,
+    platform,
+    projectDirectory,
+  }: {
+    readonly resources: ArtifactResourceScope | undefined;
+    readonly platform: NodeJS.Platform;
+    readonly projectDirectory: string | undefined;
+  },
+): Promise<
+  Result<EffectiveClientRegistrationConfiguration, ClientConfigurationFileError>
+> => {
+  const name = PRODUCT_IDENTITY.mcpServerKey;
+  if (
+    native.document !== undefined &&
+    effectiveClientServer(native.document, name) !== undefined
+  )
+    return ok(native);
+  const candidates: { path: string; scope?: ClientRegistrationScope }[] = [
+    {
+      path: userPath,
+      ...(native.scope === undefined ? {} : { scope: "user" }),
+    },
+    ...(projectDirectory === undefined
+      ? []
+      : [
+          {
+            path: (platform === "win32" ? win32 : posix).join(
+              projectDirectory,
+              ".claude.json",
+            ),
+            scope: "project" as const,
+          },
+        ]),
+  ];
+  let imported:
+    | {
+        readonly path: string;
+        readonly scope?: ClientRegistrationScope;
+        readonly entry: Record<string, unknown>;
+      }
+    | undefined;
+  for (const { path, scope } of candidates) {
+    const text = await readConfigurationText(path, resources);
+    if (!text.ok)
+      return err({ ...text.error, ...(scope === undefined ? {} : { scope }) });
+    const entry =
+      text.value === undefined
+        ? undefined
+        : mimoCodeClaudeCodeImport(text.value);
+    if (entry !== undefined)
+      imported = { path, entry, ...(scope === undefined ? {} : { scope }) };
+  }
+  if (imported === undefined) return ok(native);
+  const { path, scope, entry } = imported;
+  const base = native.document ?? parseClientConfiguration("{}", "mimo_code");
+  const document: ClientConfigurationDocument = {
+    ...base,
+    servers: { ...base.servers, [name]: entry },
+  };
+  return ok({
+    document,
+    configPath: path,
+    ...(scope === undefined
+      ? {}
+      : {
+          scope,
+          launcherScope: scope,
+          launcherConfigPath: path,
+          activationScope: scope,
+          activationConfigPath: path,
+        }),
+    declarations: [
+      {
+        source: {
+          ...document,
+          sourcePath: path,
+          ...(scope === undefined ? {} : { scope }),
+        },
+        entry,
+      },
+    ],
+    ...(native.projectInspection === undefined
+      ? {}
+      : { projectInspection: native.projectInspection }),
+    importedFrom: "claude_code",
+  });
+};
+
+const readNativeClientRegistrationConfiguration = async (
+  client: SetupClient,
+  resources: ArtifactResourceScope | undefined,
+  platform: NodeJS.Platform,
+  project?: ProjectConfigurationReadOptions,
+): Promise<
+  Result<EffectiveClientRegistrationConfiguration, ClientConfigurationFileError>
+> => {
   if (
     project === undefined ||
-    (client.format !== "opencode" && client.format !== "pi")
+    (client.format !== "opencode" &&
+      client.format !== "pi" &&
+      client.format !== "mimo_code")
   )
     return readEffectiveUserConfiguration(client, resources, platform);
   if (client.configPathError !== undefined)
@@ -854,7 +979,7 @@ export const readEffectiveClientRegistrationConfiguration = async (
 /** Resolve the native merge for a single set of parsed layers. */
 const projectRegistration = (
   sources: readonly ClientConfigurationSource[],
-  format: "opencode" | "pi",
+  format: "opencode" | "pi" | "mimo_code",
   platform: NodeJS.Platform,
 ): Result<
   {

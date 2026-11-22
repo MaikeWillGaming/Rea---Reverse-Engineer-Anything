@@ -159,6 +159,11 @@ export interface ClientRegistrationInspection {
    * can ask setup's own preflight whether it would refresh it.
    */
   readonly client: SetupClient;
+  /**
+   * The registration is MiMo Code's import of Claude Code's entry, which
+   * follows that file; refreshing this client would add a second entry.
+   */
+  readonly importedFrom?: "claude_code";
 }
 
 /** Project diagnostics from the same inspection used to select maintenance. */
@@ -196,8 +201,14 @@ export const readClientRegistrationInspections = async (
     const record = (
       status: ClientRegistrationStatus,
       activation: ClientRegistrationInspection["activation"] = "unknown",
+      importedFrom?: ClientRegistrationInspection["importedFrom"],
     ): void => {
-      inspections.push({ status, activation, client });
+      inspections.push({
+        status,
+        activation,
+        client,
+        ...(importedFrom === undefined ? {} : { importedFrom }),
+      });
     };
     const selected = options.selectedClientIds?.includes(client.name) === true;
     // An unresolved location leaves this client's registration unknown, never
@@ -474,6 +485,11 @@ export const readClientRegistrationInspections = async (
       )
         ? undefined
         : options.observeProbeSetting;
+      const { importedFrom } = configuration.value;
+      const importNote =
+        importedFrom === undefined
+          ? undefined
+          : `MiMo Code imports this rea entry from Claude Code's ${configPath} because none of its own configuration defines rea; rea setup --client ${client.name} gives it its own entry.`;
       const status = configuredStatus({
         client: effectiveClient,
         command,
@@ -531,13 +547,14 @@ export const readClientRegistrationInspections = async (
             : undefined),
         packageReference,
         advisory:
-          registrationEnvironment?.ok === true
+          importNote ??
+          (registrationEnvironment?.ok === true
             ? timeoutAdvisory(
                 client,
                 registration,
                 registrationEnvironment.value.timeoutInputs,
               )
-            : undefined,
+            : undefined),
         configuration: configuration.value,
         alignmentStale: alignment === "stale",
         providerSettings:
@@ -556,11 +573,19 @@ export const readClientRegistrationInspections = async (
               ),
         activation,
       });
-      record(
+      const reported: ClientRegistrationStatus =
         sharedDisabledConflict && status.state !== "aligned"
           ? { ...status, manual_conflict: "shared_disabled_activation" }
-          : status,
+          : status;
+      record(
+        importNote === undefined || reported.state === "aligned"
+          ? reported
+          : {
+              ...reported,
+              remediation: `${importNote} ${reported.remediation}`,
+            },
         activation,
+        importedFrom,
       );
     } catch (cause: unknown) {
       if (

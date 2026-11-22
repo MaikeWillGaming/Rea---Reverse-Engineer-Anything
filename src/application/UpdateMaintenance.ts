@@ -154,12 +154,20 @@ export const existingMaintenanceScope = async (
     environment,
   });
   const settings = explicitSetupRegistrationEnvironment(environment);
-  for (const { status: registration, activation, client } of registrations) {
+  for (const {
+    status: registration,
+    activation,
+    client,
+    importedFrom,
+  } of registrations) {
     if (registration.state === "unknown" || registration.state === "invalid") {
       unresolved.push(registration);
       continue;
     }
+    // An imported entry follows the Claude Code file maintenance refreshes as
+    // its own client; setup here would add MiMo Code's own entry instead.
     if (
+      importedFrom !== undefined ||
       activation !== "enabled" ||
       (registration.state !== "aligned" && registration.state !== "stale") ||
       registration.command_identity !== "owned"

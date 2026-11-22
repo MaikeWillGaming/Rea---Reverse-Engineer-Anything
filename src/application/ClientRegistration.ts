@@ -86,7 +86,8 @@ const registrationActivationSchema = registrationSchema
 
 // Codex, Kimi Code and Pi use enabled. Devin uses disabled. Grok reads its
 // disable list. OpenCode's effective document already uses the selected dialect.
-const ignoresDisabledKey = new Set(["codex", "kimi", "pi"]);
+// MiMo Code's MCP schema strips `disabled`; only `enabled: false` turns it off.
+const ignoresDisabledKey = new Set(["codex", "kimi", "pi", "mimo_code"]);
 const ignoresEnabledKey = new Set(["devin"]);
 
 /** Interpret activation on the effective, validated registration. */
@@ -174,7 +175,8 @@ export const parseClientRegistrationLauncher = (
     dialect === "opencode" ||
     dialect === "opencode_v2" ||
     dialect === "fx" ||
-    dialect === "kilo"
+    dialect === "kilo" ||
+    dialect === "mimo_code"
       ? arrayLauncherSchema
           .transform(normalizeOpencodeLauncher)
           .safeParse(value)
@@ -254,8 +256,12 @@ export const parseClientRegistrationPolicy = (
       ? ok(parsed.data)
       : err(registrationError(parsed.error));
   }
-  // Kilo keeps OpenCode's launcher and environment shape.
-  if (client.format === "opencode" || client.format === "kilo") {
+  // Kilo and MiMo Code keep OpenCode's launcher and environment shape.
+  if (
+    client.format === "opencode" ||
+    client.format === "kilo" ||
+    client.format === "mimo_code"
+  ) {
     const entry = opencodeLauncherSchema
       .extend({
         environment: jsonRecordSchema(z.string()).optional(),

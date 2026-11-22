@@ -1,0 +1,371 @@
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+
+import { parse } from "jsonc-parser";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { currentClientRegistrationCommand } from "../../../src/application/ClientRegistrationIdentity.js";
+import { readClientRegistrationStatuses } from "../../../src/application/ClientRegistrationStatus.js";
+import { configureClientConfiguration } from "../../../src/application/SetupClientConfiguration.js";
+import {
+  resolveSupportedClients,
+  supportedClients,
+} from "../../../src/application/SupportedClients.js";
+import {
+  runUninstall,
+  systemUninstallHost,
+} from "../../../src/application/Uninstall.js";
+import { existingMaintenanceScope } from "../../../src/application/UpdateMaintenance.js";
+import { PRODUCT_IDENTITY } from "../../../src/identity.js";
+import { clearClientLocationEnvironment } from "../../fixtures/clientEnvironment.js";
+import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
+
+const platform = process.platform;
+const command = currentClientRegistrationCommand({ platform });
+const registration = { type: "local", command, enabled: true };
+const foreign = { type: "local", command: ["/opt/other/rea", "mcp"] };
+
+beforeEach(clearClientLocationEnvironment);
+afterEach(() => vi.unstubAllEnvs());
+
+const mimoRow = async (home: string, environment: NodeJS.ProcessEnv = {}) => {
+  const row = (await resolveSupportedClients(home, platform, environment)).find(
+    ({ name }) => name === "mimo_code",
+  );
+  if (row === undefined) throw new Error("MiMo Code row is missing");
+  return row;
+};
+
+/** A home where MiMo Code has created its global configuration folder. */
+const installedHome = async (prefix: string) => {
+  const home = await createTestTempDirectory(prefix);
+  const directory = join(home, ".config", "mimocode");
+  await mkdir(directory, { recursive: true });
+  return { home, directory, target: join(directory, "mimocode.jsonc") };
+};
+
+const doctor = async (
+  home: string,
+  environment: NodeJS.ProcessEnv = {},
+  scope?: "user",
+) =>
+  (
+    await readClientRegistrationStatuses(home, command[1], {
+      platform,
+      environment,
+      ...(scope === undefined ? {} : { scope }),
+    })
+  ).find(({ client }) => client === "mimo_code");
+
+const uninstall = async (home: string, environment: NodeJS.ProcessEnv = {}) =>
+  (
+    await runUninstall(
+      false,
+      systemUninstallHost(home, undefined, environment, platform),
+    )
+  ).items;
+
+describe("MiMo Code configuration location", () => {
+  it("writes mimocode.jsonc until another global file exists, as MiMo Code's writer does", async () => {
+    const { home, directory } = await installedHome("rea-mimo-default-");
+    expect(await mimoRow(home)).toMatchObject({
+      displayName: "MiMo Code",
+      format: "mimo_code",
+      configPath: join(directory, "mimocode.jsonc"),
+      configPaths: ["config.json", "mimocode.json", "mimocode.jsonc"].map(
+        (name) => join(directory, name),
+      ),
+      markerPath: directory,
+    });
+    await writeFile(join(directory, "config.json"), "{}");
+    expect((await mimoRow(home)).configPath).toBe(
+      join(directory, "config.json"),
+    );
+    await writeFile(join(directory, "mimocode.json"), "{}");
+    expect((await mimoRow(home)).configPath).toBe(
+      join(directory, "mimocode.json"),
+    );
+    await writeFile(join(directory, "mimocode.jsonc"), "{}");
+    expect((await mimoRow(home)).configPath).toBe(
+      join(directory, "mimocode.jsonc"),
+    );
+  });
+
+  it("follows MIMOCODE_HOME before XDG_CONFIG_HOME", async () => {
+    const home = await createTestTempDirectory("rea-mimo-home-");
+    const xdg = join(home, "xdg");
+    const profile = join(home, "profile");
+    expect((await mimoRow(home, { XDG_CONFIG_HOME: xdg })).configPath).toBe(
+      join(xdg, "mimocode", "mimocode.jsonc"),
+    );
+    expect(
+      await mimoRow(home, { XDG_CONFIG_HOME: xdg, MIMOCODE_HOME: profile }),
+    ).toMatchObject({
+      configPath: join(profile, "config", "mimocode.jsonc"),
+      markerPath: join(profile, "config"),
+    });
+    // MiMo Code treats an empty MIMOCODE_HOME as unset.
+    expect((await mimoRow(home, { MIMOCODE_HOME: "" })).markerPath).toBe(
+      join(home, ".config", "mimocode"),
+    );
+  });
+
+  it("refuses a relative configuration home instead of guessing a folder", async () => {
+    const home = await createTestTempDirectory("rea-mimo-relative-");
+    for (const [variable, environment] of [
+      ["MIMOCODE_HOME", { MIMOCODE_HOME: "profile" }],
+      ["XDG_CONFIG_HOME", { XDG_CONFIG_HOME: "config" }],
+    ] as const) {
+      const row = supportedClients(home, platform, environment).find(
+        ({ name }) => name === "mimo_code",
+      );
+      expect(row?.configPathError).toContain(`${variable} is relative`);
+      expect(row).not.toHaveProperty("markerPath");
+    }
+  });
+});
+
+describe("MiMo Code registration lifecycle", () => {
+  it("registers once in a commented mimocode.jsonc and uninstalls only REA's entry", async () => {
+    const { home, target } = await installedHome("rea-mimo-lifecycle-");
+    const other = { type: "local", command: ["other-server"] };
+    await writeFile(
+      target,
+      `{
+  // MiMo Code's starter settings
+  "$schema": "https://mimo.xiaomi.com/mimocode/config.json",
+  "mcp": {
+    // A server the user manages
+    "other": { "type": "local", "command": ["other-server"] },
+  },
+}
+`,
+    );
+    const client = await mimoRow(home);
+    expect(
+      (await configureClientConfiguration(client, {}, command)).status,
+    ).toBe("configured");
+    const text = await readFile(target, "utf8");
+    expect(text).toContain("// MiMo Code's starter settings");
+    expect(text).toContain("// A server the user manages");
+    expect(parse(text).mcp).toEqual({ other, rea: registration });
+    expect(await configureClientConfiguration(client, {}, command)).toEqual({
+      status: "unchanged",
+    });
+    expect(await readFile(target, "utf8")).toBe(text);
+    expect(await doctor(home)).toMatchObject({
+      config_path: target,
+      state: "aligned",
+    });
+
+    expect(await uninstall(home)).toContainEqual(
+      expect.objectContaining({ name: "mimo_code", status: "removed" }),
+    );
+    const after = await readFile(target, "utf8");
+    expect(after).toContain("// A server the user manages");
+    expect(parse(after).mcp).toEqual({ other });
+  });
+
+  it("keeps a same-name entry REA does not own", async () => {
+    const { home, target } = await installedHome("rea-mimo-foreign-");
+    const original = JSON.stringify({ mcp: { rea: foreign } });
+    await writeFile(target, original);
+    const items = await uninstall(home);
+    expect(items.find(({ name }) => name === "mimo_code")?.status).not.toBe(
+      "removed",
+    );
+    expect(await readFile(target, "utf8")).toBe(original);
+  });
+
+  it("removes REA's entries from every global file MiMo Code merges", async () => {
+    const { home, directory, target } = await installedHome(
+      "rea-mimo-global-layers-",
+    );
+    const lower = join(directory, "config.json");
+    await writeFile(lower, JSON.stringify({ mcp: { rea: registration } }));
+    await writeFile(target, JSON.stringify({ mcp: { rea: registration } }));
+    expect(await uninstall(home)).toContainEqual(
+      expect.objectContaining({ name: "mimo_code", status: "removed" }),
+    );
+    for (const path of [lower, target])
+      expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ mcp: {} });
+  });
+});
+
+describe("MiMo Code project configuration", () => {
+  it("reports a project .mimocode entry that disables REA without editing it", async () => {
+    const { home, target } = await installedHome("rea-mimo-project-");
+    await writeFile(target, JSON.stringify({ mcp: { rea: registration } }));
+    const project = await createTestTempDirectory("rea-mimo-project-root-");
+    const projectFile = join(project, ".mimocode", "mimocode.jsonc");
+    await mkdir(join(project, ".mimocode"));
+    const disabled = '{ "mcp": { "rea": { "enabled": false } } }\n';
+    await writeFile(projectFile, disabled);
+    const cwd = vi.spyOn(process, "cwd").mockReturnValue(project);
+    try {
+      expect(await doctor(home)).toMatchObject({
+        config_path: projectFile,
+        scope: "project",
+        state: "stale",
+        remediation: expect.stringContaining(
+          `does not modify project-scoped configuration at ${projectFile}`,
+        ),
+      });
+      // The user file already holds REA's entry, so setup leaves both alone.
+      expect(
+        await configureClientConfiguration(await mimoRow(home), {}, command),
+      ).toEqual({ status: "unchanged" });
+    } finally {
+      cwd.mockRestore();
+    }
+    expect(await readFile(projectFile, "utf8")).toBe(disabled);
+    // A user-scope view ignores the project folder.
+    expect(await doctor(home, {}, "user")).toMatchObject({
+      config_path: target,
+      state: "aligned",
+    });
+  });
+
+  it("loads a project's mimocode.jsonc over its mimocode.json", async () => {
+    const { home, target } = await installedHome("rea-mimo-project-files-");
+    await writeFile(target, JSON.stringify({ mcp: { rea: registration } }));
+    const project = await createTestTempDirectory("rea-mimo-project-files-");
+    await writeFile(
+      join(project, "mimocode.json"),
+      JSON.stringify({ mcp: { rea: { enabled: false } } }),
+    );
+    await writeFile(
+      join(project, "mimocode.jsonc"),
+      JSON.stringify({ mcp: { rea: { enabled: true } } }),
+    );
+    const cwd = vi.spyOn(process, "cwd").mockReturnValue(project);
+    try {
+      expect(await doctor(home)).toMatchObject({
+        config_path: join(project, "mimocode.jsonc"),
+        scope: "project",
+        state: "aligned",
+      });
+    } finally {
+      cwd.mockRestore();
+    }
+  });
+});
+
+describe("MiMo Code's Claude Code import", () => {
+  const claudeEntry = { command: command[0], args: command.slice(1) };
+
+  it("reports the rea entry MiMo Code imports from ~/.claude.json until it has its own", async () => {
+    const { home, target } = await installedHome("rea-mimo-claude-");
+    const claude = join(home, ".claude.json");
+    await writeFile(
+      claude,
+      JSON.stringify({ mcpServers: { rea: claudeEntry } }),
+    );
+    expect(await doctor(home, {}, "user")).toMatchObject({
+      config_path: claude,
+      command,
+      state: "aligned",
+      advisory: expect.stringContaining(
+        "MiMo Code imports this rea entry from Claude Code",
+      ),
+    });
+    for (const variable of [
+      "MIMOCODE_DISABLE_CLAUDE_CODE",
+      "MIMOCODE_DISABLE_CLAUDE_CODE_MCP",
+    ])
+      expect(await doctor(home, { [variable]: "TRUE" }, "user")).toMatchObject({
+        config_path: target,
+        state: "missing",
+      });
+    // MiMo Code's own entry wins over the import.
+    await writeFile(target, JSON.stringify({ mcp: { rea: registration } }));
+    const own = await doctor(home, {}, "user");
+    expect(own).toMatchObject({ config_path: target, state: "aligned" });
+    expect(own).not.toHaveProperty("advisory");
+  });
+
+  it("asks for setup when the imported Claude Code entry is disabled", async () => {
+    const { home } = await installedHome("rea-mimo-claude-disabled-");
+    await writeFile(
+      join(home, ".claude.json"),
+      JSON.stringify({
+        mcpServers: { rea: { ...claudeEntry, disabled: true } },
+      }),
+    );
+    expect(await doctor(home, {}, "user")).toMatchObject({
+      state: "stale",
+      remediation: expect.stringMatching(
+        /MiMo Code imports this rea entry from Claude Code.*Run rea setup/,
+      ),
+    });
+  });
+
+  it("refuses to uninstall when removal would let MiMo Code import a Claude Code entry REA keeps", async () => {
+    const { home, target } = await installedHome("rea-mimo-claude-expose-");
+    const owned = JSON.stringify({ mcp: { rea: registration } });
+    await writeFile(target, owned);
+    const claude = join(home, ".claude.json");
+    const kept = JSON.stringify({
+      mcpServers: { rea: { command: "/opt/other/rea", args: ["mcp"] } },
+    });
+    await writeFile(claude, kept);
+    const mimo = (await uninstall(home)).find(
+      ({ name }) => name === "mimo_code",
+    );
+    expect(mimo).toMatchObject({
+      status: "failed",
+      detail: expect.stringContaining(claude),
+    });
+    expect(await readFile(target, "utf8")).toBe(owned);
+    expect(await readFile(claude, "utf8")).toBe(kept);
+    // Without the import, nothing takes REA's place.
+    expect(
+      await uninstall(home, { MIMOCODE_DISABLE_CLAUDE_CODE_MCP: "1" }),
+    ).toContainEqual(
+      expect.objectContaining({ name: "mimo_code", status: "removed" }),
+    );
+  });
+
+  it("uninstalls both entries when the Claude Code entry is REA's own", async () => {
+    const { home, target } = await installedHome("rea-mimo-claude-owned-");
+    await writeFile(target, JSON.stringify({ mcp: { rea: registration } }));
+    const claude = join(home, ".claude.json");
+    await writeFile(
+      claude,
+      JSON.stringify({ mcpServers: { rea: claudeEntry } }),
+    );
+    const items = await uninstall(home);
+    for (const name of ["mimo_code", "claude_code"])
+      expect(items).toContainEqual(
+        expect.objectContaining({ name, status: "removed" }),
+      );
+    expect(JSON.parse(await readFile(claude, "utf8"))).toEqual({
+      mcpServers: {},
+    });
+  });
+
+  it("leaves an imported registration to Claude Code's own update maintenance", async () => {
+    const { home } = await installedHome("rea-mimo-claude-update-");
+    await writeFile(
+      join(home, ".claude.json"),
+      JSON.stringify({
+        mcpServers: {
+          rea: {
+            command: "npx",
+            args: ["-y", `${PRODUCT_IDENTITY.packageName}@3.2.0`, "mcp"],
+          },
+        },
+      }),
+    );
+    const scope = await existingMaintenanceScope(
+      home,
+      command[1] ?? "",
+      {},
+      {
+        platform,
+      },
+    );
+    expect(scope.clients).toContain("claude_code");
+    expect(scope.clients).not.toContain("mimo_code");
+  });
+});

@@ -132,6 +132,7 @@ export const clientConfigurationServersKey = (
     case "opencode":
     case "zcode":
     case "kilo":
+    case "mimo_code":
       return "mcp";
     case "amp":
       return "amp.mcpServers";
@@ -238,6 +239,8 @@ const CLIENT_CONFIGURATION_READERS = {
   amp: JSONC_READER,
   zed: JSONC_READER,
   kilo: JSONC_READER,
+  // MiMo Code parses every configuration file as JSONC with trailing commas.
+  mimo_code: JSONC_READER,
   // Copilot CLI and fx load strict JSON; admitted JSONC is rewritten.
   copilot_cli: STRICT_JSON_REPAIRED_READER,
   copilot_cli_project: STRICT_JSON_REPAIRED_READER,
@@ -430,7 +433,10 @@ export const parseClientConfiguration = (
       };
   }
   const environmentKey =
-    format === "opencode" || format === "fx" || format === "kilo"
+    format === "opencode" ||
+    format === "fx" ||
+    format === "kilo" ||
+    format === "mimo_code"
       ? "environment"
       : format === "goose"
         ? "envs"
@@ -2097,6 +2103,7 @@ export const clientRegistrationLauncherEntry = (
     case "opencode_v2":
     case "fx":
     case "kilo":
+    case "mimo_code":
       return { type: "local", command: [...command] };
     case "goose":
       return { type: "stdio", cmd: executable, args };
@@ -2133,12 +2140,23 @@ export const clientRegistrationEntry = (
               enabled: true,
               timeout: 300,
             }
-          : ["opencode", "commandcode", "hermes", "fx", "kilo"].includes(format)
+          : [
+                "opencode",
+                "commandcode",
+                "hermes",
+                "fx",
+                "kilo",
+                "mimo_code",
+              ].includes(format)
             ? { enabled: true }
             : {};
-  const environmentKey = ["opencode", "opencode_v2", "fx", "kilo"].includes(
-    format,
-  )
+  const environmentKey = [
+    "opencode",
+    "opencode_v2",
+    "fx",
+    "kilo",
+    "mimo_code",
+  ].includes(format)
     ? "environment"
     : format === "goose"
       ? "envs"
