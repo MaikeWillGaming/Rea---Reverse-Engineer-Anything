@@ -31,7 +31,7 @@ const UNSUPPORTED_NODE_RECOVERY_LINUX_X64 =
   "    https://nodejs.org/dist/latest-v24.x/  (grab the linux-x64 tarball)\n" +
   "Then rerun this installer.\n";
 
-describe("installer Node.js admission", { timeout: 20_000 }, () => {
+describe("installer Node.js admission", () => {
   it.each(["22.23.4", "24.22.1", "26.12.1", "26.13.0", "24.22.1+build.5"])(
     "accepts supported Node %s without installing or replacing it",
     async (version) => {
@@ -71,32 +71,29 @@ describe("installer Node.js admission", { timeout: 20_000 }, () => {
   });
 });
 
-describe("curl installer scenarios", { timeout: 20_000 }, () => {
-  it("installs only a pinned REA CLI with closed stdin", async () => {
+describe("curl installer scenarios", () => {
+  it("installs only the environment-selected REA CLI without a terminal", async () => {
     const fixture = await createFixture();
-    const result = await runInstaller(fixture, ["--version", "0.3.0"]);
+    const result = await runInstaller(fixture, [], {
+      REA_VERSION: "0.3.0",
+      FAKE_CURL_FAIL: "1",
+    });
     expect(result.stdout).toContain("REA 0.3.0 is installed");
     expect(result.stdout).toContain("Run ");
-    expect(await readFile(fixture.npmLog, "utf8")).toContain(
-      "install --global --prefix",
+    expect(await readFile(fixture.npmLog, "utf8")).toBe(
+      `install --global --prefix ${join(fixture.home, ".local")} rea-agents@0.3.0\n`,
     );
     expect(await readFile(fixture.reaLog, "utf8")).toBe("--version\n");
     expect(await readdir(fixture.temporary)).toEqual([]);
   });
 
-  it("resolves and validates the latest REA release tag", async () => {
+  it("plans the latest REA release without invoking npm", async () => {
     const fixture = await createFixture();
-    const result = await runInstaller(fixture);
-    expect(result.stdout).toContain("Version: 0.3.0");
-  });
-
-  it("prints a dry run without invoking npm", async () => {
-    const fixture = await createFixture();
-    const result = await runInstaller(fixture, [
-      "--version",
-      "0.3.0",
-      "--dry-run",
-    ]);
+    const result = await runInstaller(fixture, ["--dry-run"], {
+      FAKE_CURL_BODY: '{"tag_name":"rea-agents-0.4.1"}',
+    });
+    expect(result.stdout).toContain("Version: 0.4.1");
+    expect(result.stdout).toContain("rea-agents@0.4.1");
     expect(result.stdout).toContain("no changes made");
     await expect(readFile(fixture.npmLog, "utf8")).rejects.toMatchObject({
       code: "ENOENT",
@@ -194,7 +191,7 @@ describe("curl installer scenarios", { timeout: 20_000 }, () => {
   });
 });
 
-describe("installer reported version", { timeout: 20_000 }, () => {
+describe("installer reported version", () => {
   it("rejects an empty version from a successful installed command", async () => {
     const fixture = await createFixture();
     await expect(
@@ -206,7 +203,7 @@ describe("installer reported version", { timeout: 20_000 }, () => {
   });
 });
 
-describe("installer PATH report", { timeout: 20_000 }, () => {
+describe("installer PATH report", () => {
   // Both cases run with a fixture-only PATH: a host `rea` in /usr/bin or /bin
   // would otherwise satisfy the installer's `command -v rea` and the fixture
   // would stop deciding the outcome. The fixture bin carries every command
@@ -245,7 +242,7 @@ describe("installer PATH report", { timeout: 20_000 }, () => {
   });
 });
 
-describe("installer TTY fallback", { timeout: 20_000 }, () => {
+describe("installer TTY fallback", () => {
   it("skips automatic setup when stderr is redirected", async () => {
     const fixture = await createFixture();
     const script = join(process.cwd(), "install.sh");
@@ -266,11 +263,7 @@ describe("installer TTY fallback", { timeout: 20_000 }, () => {
       ["-e", wrapper, script, fixture.installerStderrLog, "--version", "0.3.0"],
       {
         cwd: process.cwd(),
-        env: {
-          ...process.env,
-          ...installerEnvironment(fixture),
-          TERM: "xterm-256color",
-        },
+        env: { ...installerEnvironment(fixture), TERM: "xterm-256color" },
         name: "xterm-256color",
         cols: 120,
         rows: 40,
@@ -302,7 +295,7 @@ describe("installer TTY fallback", { timeout: 20_000 }, () => {
   });
 });
 
-describe("truncated installer download", { timeout: 20_000 }, () => {
+describe("truncated installer download", () => {
   it("runs nothing from a download truncated after the npm install line", async () => {
     const fixture = await createFixture();
     const source = await readFile(join(process.cwd(), "install.sh"), "utf8");
@@ -334,7 +327,7 @@ describe("truncated installer download", { timeout: 20_000 }, () => {
 describe(
   "installer download truncated at any byte",
   {
-    timeout: 180_000,
+    tags: ["long-running"],
   },
   () => {
     // Every prefix of the script, from the empty download to the full file, as
@@ -395,7 +388,7 @@ describe(
   },
 );
 
-describe("Linux user-prefix installer", { timeout: 20_000 }, () => {
+describe("Linux user-prefix installer", () => {
   it("prints the executed arguments as a reusable command with shell metacharacters", async () => {
     const fixture = await createFixture();
     const home = join(fixture.home, "home with 'quotes' $cash; [glob]");
@@ -431,7 +424,7 @@ describe("Linux user-prefix installer", { timeout: 20_000 }, () => {
   });
 });
 
-describe("native macOS installer", { timeout: 20_000 }, () => {
+describe("native macOS installer", () => {
   it("installs on Darwin with an empty prefix argument array", async () => {
     const fixture = await createFixture();
     const result = await runInstaller(fixture, ["--version", "0.3.0"], {
@@ -450,7 +443,7 @@ describe("native macOS installer", { timeout: 20_000 }, () => {
   });
 });
 
-describe("installer semantic version parsing", { timeout: 20_000 }, () => {
+describe("installer semantic version parsing", () => {
   it("rejects an explicitly empty version instead of selecting latest", async () => {
     const fixture = await createFixture();
     await expect(
@@ -668,11 +661,7 @@ const runInstaller = async (
   script = join(process.cwd(), "install.sh"),
 ): Promise<{ readonly stdout: string; readonly stderr: string }> =>
   execFileAsync("/bin/bash", [script, ...args], {
-    env: {
-      ...process.env,
-      ...installerEnvironment(fixture),
-      ...overrides,
-    },
+    env: { ...installerEnvironment(fixture), ...overrides },
   });
 
 /**

@@ -1,3 +1,5 @@
+import { graphqlContractSchema } from "../apiContract/graphqlContract.js";
+import { projectGraphqlContractView } from "./graphqlContractView.js";
 import { z } from "zod";
 import {
   apiContractSchema,
@@ -57,7 +59,9 @@ export const apiContractViewItemsSchema = z.union([
       .required({ diagnostic_id: true, source_pointer: true, code: true }),
   ),
 ]);
-const readReport = createAnalysisViewResultReader(apiContractSchema);
+const readReport = createAnalysisViewResultReader(
+  z.union([apiContractSchema, graphqlContractSchema]),
+);
 const values = (selected: readonly string[] | undefined) =>
   selected === undefined ? undefined : new Set(selected);
 const admits = (selection: ReadonlySet<string> | undefined, value: string) =>
@@ -144,6 +148,10 @@ export const projectApiContractView = (
   parent: AnalysisViewParent,
   admitted: AdmittedView,
 ) => {
+  const parsed = readReport(parent);
+  if (!parsed.ok) return parsed;
+  if (parsed.value.format === "graphql-sdl")
+    return projectGraphqlContractView(parent, admitted, parsed.value);
   const view = ownedView<
     SummaryAnalysisView | z.output<typeof apiContractViewRequestSchema>
   >(admitted, "summary", "api-contract");
@@ -158,8 +166,6 @@ export const projectApiContractView = (
         },
       ]),
     );
-  const parsed = readReport(parent);
-  if (!parsed.ok) return parsed;
   const {
     operations: _operations,
     path_item_references: _references,
@@ -179,7 +185,7 @@ export const projectApiContractView = (
     unknowns:
       context.source_coverage.status === "partial"
         ? [
-            "Unresolved or malformed declarations limit this inventory; query path-item-references and diagnostics for exact source pointers.",
+            "This inventory is partial. Inspect limitations for coverage and query path-item-references and diagnostics for any retained source pointers.",
           ]
         : [],
   };
@@ -193,7 +199,7 @@ export const projectApiContractView = (
         sha256: context.artifact.sha256,
       },
       summary: context,
-      coverage: completeWithinViewCoverage(1, 1),
+      coverage: completeWithinViewCoverage(1),
     });
   const selected = selectRows(parsed.value, view);
   return ok({

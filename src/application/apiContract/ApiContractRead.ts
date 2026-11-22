@@ -1,32 +1,40 @@
 import {
   artifactFileCancellationCause,
   artifactFilePrimaryFacts,
-} from "../../artifacts/ArtifactFileOperation.js";
-import { ArtifactReaderFailure } from "../../artifacts/ArtifactReader.js";
-import type { ArtifactResourceScope } from "../../artifacts/ArtifactResourceScope.js";
-import { readStableArtifact } from "../../artifacts/readStableArtifact.js";
-import {
+  ArtifactReaderFailure,
+  type ArtifactResourceScope,
+  readStableArtifact,
   projectStableArtifactFailure,
   stableArtifactInputRecovery,
-} from "../../artifacts/StableArtifactFailure.js";
+  readerIntegrityFailure,
+} from "../../resources/index.js";
 import type { AnalysisError } from "../../domain/analysisErrorBase.js";
 import {
   AnalysisAccessDeniedError,
-  AnalysisArtifactChangedError,
-  AnalysisCancelledError,
   AnalysisInputError,
   AnalysisResourceConstraintError,
+  cancelledBy,
+  carriedReason,
 } from "../../domain/analysisErrorCore.js";
 import { ArtifactOperationError } from "../../domain/artifactOperationError.js";
 import {
   API_CONTRACT_OPERATION as operation,
   API_CONTRACT_PROVIDER,
 } from "../../domain/apiContract/apiContract.js";
-import type { InspectApiContractInput } from "../../domain/apiContract/apiContractQuery.js";
 import { isSelectedRegularFileError } from "../../filesystem/RegularFile.js";
 import { err, ok } from "../../domain/result.js";
 
-const inputFailure = (path: string, cause: unknown, message: string) =>
+interface ContractDocumentInput {
+  readonly path: string;
+  readonly max_file_bytes: number;
+  readonly parameter?: "path" | "operations_path";
+}
+const inputFailure = (
+  path: string,
+  cause: unknown,
+  message: string,
+  parameter = "path",
+) =>
   new AnalysisInputError(
     operation,
     {
@@ -37,7 +45,7 @@ const inputFailure = (path: string, cause: unknown, message: string) =>
     },
     [
       {
-        path: ["path"],
+        path: [parameter],
         reason: "invalid_format",
         message: `${message} (${path})`,
       },
@@ -46,7 +54,7 @@ const inputFailure = (path: string, cause: unknown, message: string) =>
 
 const readFailure = (
   failure: unknown,
-  input: InspectApiContractInput,
+  input: ContractDocumentInput,
 ): AnalysisError => {
   const { cause, origin } = artifactFilePrimaryFacts(failure);
   if (
@@ -54,16 +62,12 @@ const readFailure = (
     cause instanceof ArtifactReaderFailure
   ) {
     if (cause.reason === "cancelled")
-      return new AnalysisCancelledError(operation, {
-        cause: artifactFileCancellationCause(cause),
-      });
-    if (cause.reason === "integrity")
-      return new AnalysisArtifactChangedError(
+      return cancelledBy(
         operation,
-        input.path,
-        cause.message,
-        { cause },
+        carriedReason(artifactFileCancellationCause(cause)),
       );
+    if (cause.reason === "integrity")
+      return readerIntegrityFailure(operation, input.path, cause);
     if (cause.reason === "limit")
       return new AnalysisResourceConstraintError(
         operation,
@@ -78,7 +82,7 @@ const readFailure = (
         },
       );
     if (cause.reason === "path" || cause.reason === "format")
-      return inputFailure(input.path, cause, cause.message);
+      return inputFailure(input.path, cause, cause.message, input.parameter);
   }
   if (cause instanceof Error && "code" in cause) {
     if (cause.code === "EACCES" || cause.code === "EPERM")
@@ -90,6 +94,7 @@ const readFailure = (
         input.path,
         cause,
         "Selected API document could not be read",
+        input.parameter,
       );
   }
   return new ArtifactOperationError(
@@ -103,7 +108,7 @@ const readFailure = (
 
 /** The existing owner verifies exactly the bytes whose SHA-256 the inventory cites. */
 export const readApiContract = async (
-  input: InspectApiContractInput,
+  input: ContractDocumentInput,
   resources: ArtifactResourceScope,
   signal?: AbortSignal,
 ) => {

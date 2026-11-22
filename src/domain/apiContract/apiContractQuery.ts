@@ -1,11 +1,13 @@
 import { z } from "zod";
-import { localPathStringSchema } from "../localPath.js";
+import { absoluteLocalPathStringSchema } from "../localPath.js";
+import { graphqlContractViewRequestSchema } from "./graphqlContractQuery.js";
 import {
   API_CONTRACT_MAX_FILE_BYTES,
   apiContractDiagnosticSchema,
   apiContractOperationSchema,
   apiContractPathReferenceSchema,
 } from "./apiContract.js";
+import { presentRootDiscriminator } from "../schemaAnnotations.js";
 
 const page = {
   kind: z.literal("api-contract"),
@@ -44,26 +46,47 @@ export const apiContractViewRequestSchema = z.discriminatedUnion("collection", [
   }),
 ]);
 
-export const inspectApiContractInputSchema = z.strictObject({
-  path: localPathStringSchema.describe(
-    "Absolute path to one local OpenAPI JSON document",
+const apiContractFileBytesSchema = z
+  .int()
+  .positive()
+  .max(API_CONTRACT_MAX_FILE_BYTES)
+  .default(API_CONTRACT_MAX_FILE_BYTES)
+  .describe(
+    "Maximum bytes per input document (up to 32 MiB); reply paging does not increase parser allowances",
+  );
+const commonInput = {
+  path: absoluteLocalPathStringSchema.describe(
+    "Absolute path to a local API contract document",
   ),
-  format: z.literal("openapi-json").default("openapi-json"),
-  max_file_bytes: z
-    .int()
-    .positive()
-    .max(API_CONTRACT_MAX_FILE_BYTES)
-    .default(API_CONTRACT_MAX_FILE_BYTES)
-    .describe(
-      "Maximum input document bytes (up to 32 MiB); reply paging does not increase parser allowances",
-    ),
+  max_file_bytes: apiContractFileBytesSchema,
   detail: z.enum(["summary", "complete"]).default("summary"),
-  view: apiContractViewRequestSchema
-    .optional()
-    .describe(
-      "Return this selected page immediately; complete Evidence is retained and view takes precedence over detail",
-    ),
-});
+};
+const selectionDescription =
+  "Return this selected page immediately; complete Evidence is retained and view takes precedence over detail";
+export const inspectApiContractInputSchema = presentRootDiscriminator(
+  z.union([
+    z.strictObject({
+      ...commonInput,
+      format: z.literal("openapi-json").default("openapi-json"),
+      view: apiContractViewRequestSchema
+        .optional()
+        .describe(selectionDescription),
+    }),
+    z.strictObject({
+      ...commonInput,
+      format: z.literal("graphql-sdl"),
+      operations_path: absoluteLocalPathStringSchema
+        .optional()
+        .describe(
+          "Optional absolute path to one local GraphQL operation/fragment document; parsed without execution",
+        ),
+      view: graphqlContractViewRequestSchema
+        .optional()
+        .describe(selectionDescription),
+    }),
+  ]),
+  "format",
+);
 export type InspectApiContractInput = z.output<
   typeof inspectApiContractInputSchema
 >;
