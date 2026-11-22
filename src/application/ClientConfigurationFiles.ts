@@ -116,7 +116,9 @@ type ClientConfigurationLocation = Pick<
 interface ClientConfigurationReadOptions {
   readonly writeOverrides?: Readonly<Record<string, string>>;
   /** The writer's verified snapshot of the selected path, which must not be reopened here. */
-  readonly targetDocument?: ClientConfigurationDocument;
+  readonly targetDocument?: ClientConfigurationDocument | null;
+  /** Native peers already discovered before setup took its target snapshot. */
+  readonly peers?: ReadonlyMap<string, ClientConfigurationDocument>;
 }
 
 const configurationEnvironmentFailure = (
@@ -200,10 +202,20 @@ export const readClientConfigurationFiles = async (
   client: ClientConfigurationLocation,
   resources: ArtifactResourceScope | undefined,
   platform: NodeJS.Platform,
-  { writeOverrides, targetDocument }: ClientConfigurationReadOptions = {},
+  options: ClientConfigurationReadOptions | "peers" = {},
 ): Promise<
   Result<readonly ClientConfigurationSource[], ClientConfigurationFileError>
 > => {
+  // Setup reads independent layers first, then admits them with its physical target snapshot.
+  if (options === "peers") {
+    const paths = new Set(client.configPaths);
+    paths.delete(client.configPath);
+    return readUserConfigurationSources(
+      { ...client, configPaths: [...paths] },
+      resources,
+    );
+  }
+  const { writeOverrides, targetDocument, peers } = options;
   const validateFragment = (
     path: string,
     document: ClientConfigurationDocument,
@@ -226,6 +238,7 @@ export const readClientConfigurationFiles = async (
           path === client.configPath || client.readOnlyLowerLayers !== true
             ? validateFragment(path, document)
             : undefined,
+    peers,
   );
   if (!documents.ok) return documents;
   const effective = mergeClientConfigurationDocuments(
@@ -300,11 +313,12 @@ export const readClientConfigurationFiles = async (
 const readUserConfigurationSources = async (
   client: ClientConfigurationLocation,
   resources: ArtifactResourceScope | undefined,
-  targetDocument?: ClientConfigurationDocument,
+  targetDocument?: ClientConfigurationDocument | null,
   validate?: (
     path: string,
     document: ClientConfigurationDocument,
   ) => ClientConfigurationFileError | undefined,
+  peers?: ReadonlyMap<string, ClientConfigurationDocument>,
 ): Promise<
   Result<readonly ClientConfigurationSource[], ClientConfigurationFileError>
 > => {
@@ -326,8 +340,10 @@ const readUserConfigurationSources = async (
   for (const path of paths) {
     const document =
       path === client.configPath && targetDocument !== undefined
-        ? ok(targetDocument)
-        : await readConfigurationFile(path, client.format, resources);
+        ? ok(targetDocument ?? undefined)
+        : peers !== undefined
+          ? ok(peers.get(path))
+          : await readConfigurationFile(path, client.format, resources);
     if (!document.ok) return document;
     if (document.value === undefined) continue;
     const failure = validate?.(path, document.value);
