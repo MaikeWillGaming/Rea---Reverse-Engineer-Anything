@@ -6,7 +6,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { currentClientRegistrationCommand } from "../../../src/application/ClientRegistrationIdentity.js";
 import { readClientRegistrationStatuses } from "../../../src/application/ClientRegistrationStatus.js";
-import { configureClientConfiguration } from "../../../src/application/SetupClientConfiguration.js";
+import {
+  configureClientConfiguration,
+  inspectClientConfiguration,
+} from "../../../src/application/SetupClientConfiguration.js";
 import {
   resolveSupportedClients,
   supportedClients,
@@ -289,6 +292,23 @@ describe("MiMo Code project configuration", () => {
       cwd.mockRestore();
     }
   });
+
+  it("keeps user scope for the Claude Code import when the project is the home folder", async () => {
+    const { home } = await installedHome("rea-mimo-project-home-");
+    const claude = join(home, ".claude.json");
+    await writeFile(
+      claude,
+      JSON.stringify({ mcpServers: { rea: claudeEntry } }),
+    );
+    const cwd = vi.spyOn(process, "cwd").mockReturnValue(home);
+    try {
+      const status = await doctor(home);
+      expect(status).toMatchObject({ config_path: claude, state: "aligned" });
+      expect(status).not.toHaveProperty("scope", "project");
+    } finally {
+      cwd.mockRestore();
+    }
+  });
 });
 
 describe("MiMo Code's Claude Code import", () => {
@@ -336,6 +356,45 @@ describe("MiMo Code's Claude Code import", () => {
         /MiMo Code imports this rea entry from Claude Code.*Run rea setup/,
       ),
     });
+  });
+
+  it("refuses setup that would replace an imported Claude Code entry REA does not own", async () => {
+    const { home, target } = await installedHome("rea-mimo-claude-setup-");
+    const claude = join(home, ".claude.json");
+    await writeFile(
+      claude,
+      JSON.stringify({
+        mcpServers: { rea: { command: "/opt/other/rea", args: ["mcp"] } },
+      }),
+    );
+    const client = await mimoRow(home);
+    expect(await inspectClientConfiguration(client, {}, command)).toMatchObject(
+      { status: "invalid", remediation: expect.stringContaining(claude) },
+    );
+    expect(
+      await configureClientConfiguration(client, {}, command),
+    ).toMatchObject({
+      status: "failed",
+      reason: "registration_ownership",
+      detail: expect.stringContaining(claude),
+    });
+    await expect(readFile(target, "utf8")).rejects.toThrow();
+    expect((await doctor(home, {}, "user"))?.remediation).not.toContain(
+      "gives it its own entry",
+    );
+    const unimported = await mimoRow(home, {
+      MIMOCODE_DISABLE_CLAUDE_CODE_MCP: "1",
+    });
+    expect(await inspectClientConfiguration(unimported, {}, command)).toEqual({
+      status: "create",
+    });
+    await writeFile(
+      claude,
+      JSON.stringify({ mcpServers: { rea: claudeEntry } }),
+    );
+    expect(
+      (await configureClientConfiguration(client, {}, command)).status,
+    ).toBe("configured");
   });
 
   it("refuses to uninstall when removal would let MiMo Code import a Claude Code entry REA keeps", async () => {

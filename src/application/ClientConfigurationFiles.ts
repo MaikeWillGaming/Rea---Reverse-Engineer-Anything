@@ -635,26 +635,31 @@ export const readEffectiveClientRegistrationConfiguration = async (
     : native;
 };
 
-/** The Claude Code files MiMo Code imports from, in the order a later one replaces an earlier one. */
-const claudeCodeImportCandidates = (
+/**
+ * The Claude Code files MiMo Code imports from, in the order a later one
+ * replaces an earlier one. A project file that is the user's file stays the
+ * user's.
+ */
+const claudeCodeImportCandidates = async (
   userPath: string,
   scoped: boolean,
   projectDirectory: string | undefined,
   platform: NodeJS.Platform,
-): readonly { path: string; scope?: ClientRegistrationScope }[] => [
-  { path: userPath, ...(scoped ? { scope: "user" as const } : {}) },
-  ...(projectDirectory === undefined
-    ? []
-    : [
-        {
-          path: (platform === "win32" ? win32 : posix).join(
-            projectDirectory,
-            ".claude.json",
-          ),
-          scope: "project" as const,
-        },
-      ]),
-];
+): Promise<readonly { path: string; scope?: ClientRegistrationScope }[]> => {
+  const user = {
+    path: userPath,
+    ...(scoped ? { scope: "user" as const } : {}),
+  };
+  if (projectDirectory === undefined) return [user];
+  const path = (platform === "win32" ? win32 : posix).join(
+    projectDirectory,
+    ".claude.json",
+  );
+  return (await physicalPathKey(path, platform)) ===
+    (await physicalPathKey(userPath, platform))
+    ? [user]
+    : [user, { path, scope: "project" }];
+};
 
 /**
  * MiMo Code imports Claude Code's `rea` entry only when none of its own
@@ -683,7 +688,7 @@ const withClaudeCodeImport = async (
     effectiveClientServer(native.document, name) !== undefined
   )
     return ok(native);
-  const candidates = claudeCodeImportCandidates(
+  const candidates = await claudeCodeImportCandidates(
     userPath,
     native.scope !== undefined,
     projectDirectory,

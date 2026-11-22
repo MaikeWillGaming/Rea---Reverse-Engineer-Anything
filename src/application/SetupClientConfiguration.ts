@@ -88,6 +88,7 @@ import {
 } from "./SupportedClients.js";
 import { errorMessage } from "../kernel/errorMessage.js";
 import { isRecord } from "../kernel/isRecord.js";
+import { mimoCodeClaudeCodeImport } from "./MimoCodeClaudeImport.js";
 
 export class ClientConfigurationCleanupRollbackFailure extends RegularFileCleanupFailure<string> {
   constructor(
@@ -252,7 +253,12 @@ const configureClientDocument = async (
     void cause;
     return { status: "failed", reason: "readback" };
   }
-  const fallback = await readZcodeFallbackServers(client, platform, parsed);
+  const fallback = await readSuppressedServers(
+    client,
+    platform,
+    files.value,
+    parsed,
+  );
   if (!fallback.ok) {
     if (fallback.error.kind !== "registration_ownership")
       throwCleanupFailure(fallback.error);
@@ -956,7 +962,11 @@ const inspectClientDocument = async (
       }
       if (policy.value !== undefined)
         return { status: "invalid", remediation: policy.value };
-      const fallback = await readZcodeFallbackServers(client, platform);
+      const fallback = await readSuppressedServers(
+        client,
+        platform,
+        files.value,
+      );
       if (!fallback.ok) {
         if (fallback.error.kind !== "registration_ownership")
           throwCleanupFailure(fallback.error);
@@ -1016,7 +1026,12 @@ const inspectClientDocument = async (
       (await privateProfileCurrent(client, original))
     )
       return { status: "already_current" };
-    const fallback = await readZcodeFallbackServers(client, platform, parsed);
+    const fallback = await readSuppressedServers(
+      client,
+      platform,
+      files.value,
+      parsed,
+    );
     if (!fallback.ok) {
       if (fallback.error.kind !== "registration_ownership")
         throwCleanupFailure(fallback.error);
@@ -1185,6 +1200,66 @@ const registrationOwnershipBlocker = (
       return clientRegistrationOwnershipRemediation(ownership, entry.paths);
   }
   return undefined;
+};
+
+/** Admit a first native server that suppresses another file's registrations. */
+const readSuppressedServers = (
+  client: SetupClient,
+  platform: NodeJS.Platform,
+  sources: readonly ClientConfigurationSource[],
+  parsed?: ClientConfigurationDocument,
+): ReturnType<typeof readZcodeFallbackServers> =>
+  client.claudeCodeImportPath === undefined
+    ? readZcodeFallbackServers(client, platform, parsed)
+    : admitClaudeCodeImport(client, client.claudeCodeImportPath, {
+        sources,
+        parsed,
+        platform,
+      });
+
+/**
+ * MiMo Code imports Claude Code's `rea` entry until one of its own files
+ * declares one, so setup's first entry replaces that import. REA writes only
+ * MiMo Code's file and must own the entry it replaces.
+ */
+const admitClaudeCodeImport = async (
+  client: SetupClient,
+  path: string,
+  {
+    sources,
+    parsed,
+    platform,
+  }: {
+    readonly sources: readonly ClientConfigurationSource[];
+    readonly parsed: ClientConfigurationDocument | undefined;
+    readonly platform: NodeJS.Platform;
+  },
+): ReturnType<typeof readZcodeFallbackServers> => {
+  const name = PRODUCT_IDENTITY.mcpServerKey;
+  const native = effectiveClientConfiguration(
+    sources,
+    { client, document: parsed },
+    platform,
+  );
+  if (native !== undefined && effectiveClientServer(native, name) !== undefined)
+    return ok({});
+  const text = await readConfigurationText(path);
+  if (!text.ok)
+    return err({
+      ...text.error,
+      detail: `MiMo Code imports the ${name} entry in Claude Code's ${path} until it has its own, and that file could not be read. ${text.error.detail}`,
+    });
+  const entry =
+    text.value === undefined ? undefined : mimoCodeClaudeCodeImport(text.value);
+  if (entry === undefined) return ok({});
+  const ownership = clientRegistrationOwnership(entry, client);
+  return ownership === "owned"
+    ? ok({})
+    : err({
+        kind: "registration_ownership",
+        path,
+        detail: `MiMo Code imports the ${name} entry in Claude Code's ${path} until it has its own, and setup's entry would replace it. ${clientRegistrationOwnershipRemediation(ownership, [path])}`,
+      });
 };
 
 /** Admit the fallback only when the first native ZCode server would suppress it. */

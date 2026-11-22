@@ -442,7 +442,7 @@ export const readClientRegistrationInspections = async (
       const importNote =
         importedFrom === undefined
           ? undefined
-          : `MiMo Code imports this rea entry from Claude Code's ${configPath} because none of its own configuration defines rea; rea setup --client ${client.name} gives it its own entry.`;
+          : claudeCodeImportNote(client, configPath, commandFacts.identity);
       const environmentFailure = registrationEnvironmentFailure(
         registrationEnvironment,
         configuration.value,
@@ -677,6 +677,14 @@ const registrationEnvironmentFailure = (
 
 const withImportNote = (note: string | undefined, message: string): string =>
   note === undefined ? message : `${note} ${message}`;
+
+/** Setup replaces only an imported entry REA owns. */
+const claudeCodeImportNote = (
+  client: SetupClient,
+  configPath: string,
+  identity: ClientRegistrationCommandIdentity,
+): string =>
+  `MiMo Code imports this rea entry from Claude Code's ${configPath} because none of its own configuration defines rea${identity === "owned" ? `; rea setup --client ${client.name} gives it its own entry` : ""}.`;
 
 /** A client that rewrites its file from memory must be quit before setup. */
 const remediation = (
