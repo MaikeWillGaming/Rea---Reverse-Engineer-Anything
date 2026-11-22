@@ -24,6 +24,7 @@ const platform = process.platform;
 const command = currentClientRegistrationCommand({ platform });
 const registration = { type: "local", command, enabled: true };
 const foreign = { type: "local", command: ["/opt/other/rea", "mcp"] };
+const claudeEntry = { command: command[0], args: command.slice(1) };
 
 beforeEach(clearClientLocationEnvironment);
 afterEach(() => vi.unstubAllEnvs());
@@ -263,11 +264,34 @@ describe("MiMo Code project configuration", () => {
       cwd.mockRestore();
     }
   });
+
+  it("sends the repair to the user file when a project only adds the disabled key MiMo Code strips", async () => {
+    const { home, target } = await installedHome("rea-mimo-project-disabled-");
+    await writeFile(
+      target,
+      JSON.stringify({ mcp: { rea: { ...registration, enabled: false } } }),
+    );
+    const project = await createTestTempDirectory("rea-mimo-project-disabled-");
+    const projectFile = join(project, "mimocode.json");
+    await writeFile(
+      projectFile,
+      JSON.stringify({ mcp: { rea: { disabled: true } } }),
+    );
+    const cwd = vi.spyOn(process, "cwd").mockReturnValue(project);
+    try {
+      const status = await doctor(home);
+      expect(status).toMatchObject({
+        state: "stale",
+        remediation: expect.stringContaining("Run rea setup"),
+      });
+      expect(status?.remediation).not.toContain(projectFile);
+    } finally {
+      cwd.mockRestore();
+    }
+  });
 });
 
 describe("MiMo Code's Claude Code import", () => {
-  const claudeEntry = { command: command[0], args: command.slice(1) };
-
   it("reports the rea entry MiMo Code imports from ~/.claude.json until it has its own", async () => {
     const { home, target } = await installedHome("rea-mimo-claude-");
     const claude = join(home, ".claude.json");
@@ -357,7 +381,9 @@ describe("MiMo Code's Claude Code import", () => {
       mcpServers: {},
     });
   });
+});
 
+describe("Update maintenance of MiMo Code's Claude Code import", () => {
   const pinned = JSON.stringify({
     mcpServers: {
       rea: {
@@ -402,5 +428,32 @@ describe("MiMo Code's Claude Code import", () => {
         remediation: expect.stringContaining("rea setup --client mimo_code"),
       }),
     );
+  });
+
+  it("reports an imported entry whose environment REA rejects as invalid", async () => {
+    const { home } = await installedHome("rea-mimo-claude-environment-");
+    const imported = join(home, ".claude.json");
+    await writeFile(
+      imported,
+      JSON.stringify({
+        mcpServers: {
+          rea: { ...claudeEntry, env: { REA_ANALYSIS_PROVIDER: "Auto" } },
+        },
+      }),
+    );
+    const invalid = {
+      client: "mimo_code",
+      config_path: imported,
+      state: "invalid",
+      remediation: expect.stringContaining("REA_ANALYSIS_PROVIDER"),
+    };
+    expect(await doctor(home, {}, "user")).toMatchObject(invalid);
+    const scope = await existingMaintenanceScope(
+      home,
+      command[1] ?? "",
+      { CLAUDE_CONFIG_DIR: join(home, "claude-profile") },
+      { platform },
+    );
+    expect(scope.unresolved).toContainEqual(expect.objectContaining(invalid));
   });
 });

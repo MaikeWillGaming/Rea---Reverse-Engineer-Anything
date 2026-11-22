@@ -101,23 +101,40 @@ const withoutStrippedKeys = (value: unknown, client: SetupClient): unknown =>
       )
     : value;
 
+const readsDisabledKey = (client: SetupClient): boolean =>
+  client.format !== "grok" && !ignoresDisabledKey.has(client.name);
+const readsEnabledKey = (client: SetupClient): boolean =>
+  !ignoresEnabledKey.has(client.name);
+// Shared storage also serves ZCode. Its flag binds every reader of the row.
+const readsEnableKey = (
+  client: SetupClient,
+  dialect: ClientConfigurationDocument["dialect"] | undefined,
+): boolean =>
+  dialect === "zcode" ||
+  dialect === "zcode_fallback" ||
+  client.sharedRegistration === true;
+
+/** The entry keys `clientRegistrationActivation` reads for this client. */
+export const clientActivationKeys = (
+  client: SetupClient,
+  parsed: ClientConfigurationDocument | undefined,
+): readonly string[] => [
+  ...(readsDisabledKey(client) ? ["disabled"] : []),
+  ...(readsEnabledKey(client) ? ["enabled"] : []),
+  ...(readsEnableKey(client, parsed?.dialect) ? ["enable"] : []),
+];
+
 /** Interpret activation on the effective, validated registration. */
 export const clientRegistrationActivation = (
   registration: z.output<typeof registrationActivationSchema>,
   client: SetupClient,
   parsed: ClientConfigurationDocument,
 ): "enabled" | "disabled" => {
-  // Shared storage also serves ZCode. Its flag binds every reader of the row.
   const sharedDisabled =
-    (parsed.dialect === "zcode" ||
-      parsed.dialect === "zcode_fallback" ||
-      client.sharedRegistration === true) &&
-    registration.enable === false;
-  return (client.format !== "grok" &&
-    !ignoresDisabledKey.has(client.name) &&
-    registration.disabled === true) ||
+    readsEnableKey(client, parsed.dialect) && registration.enable === false;
+  return (readsDisabledKey(client) && registration.disabled === true) ||
     (registration.enabled === false &&
-      !ignoresEnabledKey.has(client.name) &&
+      readsEnabledKey(client) &&
       !clientServerForcedEnabled(parsed, PRODUCT_IDENTITY.mcpServerKey)) ||
     sharedDisabled ||
     clientServerListedDisabled(parsed, PRODUCT_IDENTITY.mcpServerKey)

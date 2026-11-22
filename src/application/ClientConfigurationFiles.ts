@@ -16,6 +16,7 @@ import {
   type SetupClient,
 } from "./SupportedClients.js";
 import { clientRegistrationEnvironment } from "./ClientRegistrationEnvironment.js";
+import { clientActivationKeys } from "./ClientRegistration.js";
 import type { ArtifactResourceScope } from "../resources/index.js";
 import type { ConfigurationError } from "../domain/configurationErrors.js";
 import { mergeEnvironmentOverrides } from "../process/snapshotEnvironment.js";
@@ -626,7 +627,7 @@ export const readEffectiveClientRegistrationConfiguration = async (
     project,
   );
   return native.ok && client.claudeCodeImportPath !== undefined
-    ? withClaudeCodeImport(native.value, client.claudeCodeImportPath, {
+    ? withClaudeCodeImport(native.value, client, client.claudeCodeImportPath, {
         resources,
         platform,
         projectDirectory: project?.projectDirectory,
@@ -641,6 +642,7 @@ export const readEffectiveClientRegistrationConfiguration = async (
  */
 const withClaudeCodeImport = async (
   native: EffectiveClientRegistrationConfiguration,
+  client: SetupClient,
   userPath: string,
   {
     resources,
@@ -702,6 +704,13 @@ const withClaudeCodeImport = async (
     ...base,
     servers: { ...base.servers, [name]: entry },
   };
+  const failure = configurationEnvironmentFailure(client, platform, {
+    path,
+    document,
+    validation: "effective",
+  });
+  if (failure !== undefined)
+    return err({ ...failure, ...(scope === undefined ? {} : { scope }) });
   return ok({
     document,
     configPath: path,
@@ -956,13 +965,12 @@ const readNativeClientRegistrationConfiguration = async (
     );
 
   const launcher = active.findLast(declaresLauncher) ?? last;
+  const activationKeys = clientActivationKeys(client, document);
   const activation =
     active.findLast(
       ({ entry }) =>
         isRecord(entry) &&
-        ["disabled", "enabled", "enable"].some((key) =>
-          Object.hasOwn(entry, key),
-        ),
+        activationKeys.some((key) => Object.hasOwn(entry, key)),
     ) ?? last;
   return ok({
     document,
