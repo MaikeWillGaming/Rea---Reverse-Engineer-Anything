@@ -460,9 +460,13 @@ const optionalHopperDemoCheck = async (
   host: DoctorProviderProbeHost,
   hopperPath: string | undefined,
 ): Promise<DoctorCheck | undefined> =>
-  host.platform !== "linux" || hopperPath === undefined
+  hopperPath === undefined
     ? undefined
-    : host.linuxDemoRuntimeCheck();
+    : host.platform === "linux"
+      ? host.linuxDemoRuntimeCheck()
+      : host.platform === "darwin"
+        ? host.macHopperPythonCheck?.(hopperPath)
+        : undefined;
 
 const optionalIlspyCheck = async (
   host: DoctorProviderProbeHost,
