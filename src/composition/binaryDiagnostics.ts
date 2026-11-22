@@ -16,5 +16,6 @@ export { createPeCertificatesService } from "./binaryDiagnostics/peCertificates.
 export { createPeImportsService } from "./binaryDiagnostics/peImports.js";
 export { createPeLoadConfigService } from "./binaryDiagnostics/peLoadConfig.js";
 export { createPeResourcesService } from "./binaryDiagnostics/peResources.js";
+export { createPeRichHeaderService } from "./binaryDiagnostics/peRichHeader.js";
 export { createRecordedCrashService } from "./binaryDiagnostics/recordedCrash.js";
 export { createWindowsShortcutService } from "./binaryDiagnostics/windowsShortcut.js";
