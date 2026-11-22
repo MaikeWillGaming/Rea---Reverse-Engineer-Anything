@@ -32,6 +32,7 @@ import {
 import { z } from "zod";
 
 import { err, ok, type Result } from "../domain/result.js";
+import { isRecord } from "../kernel/isRecord.js";
 import { PRODUCT_IDENTITY } from "../identity.js";
 import type { SetupClient } from "./SupportedClients.js";
 import { compareUnicodeCodePoints } from "../domain/unicodeCodePointOrder.js";
@@ -388,6 +389,19 @@ const fxConfigurationServersKey = (
   return legacy ? "mcp" : "mcpServers";
 };
 
+/** MiMo Code strips disabled from each MCP server before it merges its files. */
+const mimoCodeServers = (
+  servers: Record<string, unknown>,
+): Record<string, unknown> =>
+  Object.fromEntries(
+    Object.entries(servers).map(([name, value]) => {
+      if (!isRecord(value) || !Object.hasOwn(value, "disabled"))
+        return [name, value];
+      const { disabled: _disabled, ...entry } = value;
+      return [name, entry];
+    }),
+  );
+
 export const parseClientConfiguration = (
   text: string,
   format: ClientConfigurationFormat | undefined,
@@ -478,7 +492,7 @@ export const parseClientConfiguration = (
     return {
       document,
       ...(requiresRewrite === undefined ? {} : { requiresRewrite }),
-      servers,
+      servers: format === "mimo_code" ? mimoCodeServers(servers) : servers,
       serversPath: [serversKey],
       dialect: format,
       environmentKey,

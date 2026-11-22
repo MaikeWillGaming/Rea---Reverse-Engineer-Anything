@@ -4,7 +4,6 @@ import {
   gooseEnvironmentField,
 } from "./ClientRegistrationSource.js";
 import { PRODUCT_IDENTITY } from "../identity.js";
-import { isRecord } from "../kernel/isRecord.js";
 import { HOST_PLATFORM } from "../platform/HostPlatform.js";
 import { jsonRecordSchema } from "../domain/jsonRecord.js";
 
@@ -91,16 +90,6 @@ const registrationActivationSchema = registrationSchema
 const ignoresDisabledKey = new Set(["codex", "kimi", "pi", "mimo_code"]);
 const ignoresEnabledKey = new Set(["devin"]);
 
-/** MiMo Code drops `disabled` before validating, so no value of it is invalid there. */
-const withoutStrippedKeys = (value: unknown, client: SetupClient): unknown =>
-  client.format === "mimo_code" &&
-  isRecord(value) &&
-  Object.hasOwn(value, "disabled")
-    ? Object.fromEntries(
-        Object.entries(value).filter(([key]) => key !== "disabled"),
-      )
-    : value;
-
 const readsDisabledKey = (client: SetupClient): boolean =>
   client.format !== "grok" && !ignoresDisabledKey.has(client.name);
 const readsEnabledKey = (client: SetupClient): boolean =>
@@ -184,9 +173,7 @@ export const parseClientRegistrationActivation = (
   client: SetupClient,
   document: ClientConfigurationDocument,
 ): Result<"enabled" | "disabled", ConfigurationError> => {
-  const parsed = registrationActivationSchema.safeParse(
-    withoutStrippedKeys(value, client),
-  );
+  const parsed = registrationActivationSchema.safeParse(value);
   return parsed.success
     ? ok(clientRegistrationActivation(parsed.data, client, document))
     : err(registrationError(parsed.error));
@@ -272,7 +259,6 @@ export const parseClientRegistrationPolicy = (
   value: unknown,
   client: SetupClient,
 ): Result<ClientRegistration, ConfigurationError> => {
-  value = withoutStrippedKeys(value, client);
   const policy = validateClientPolicy(value, client);
   if (!policy.ok) return policy;
   if (client.format === "dsh") {

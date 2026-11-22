@@ -15,6 +15,7 @@ import {
   legacyClientServerPath,
   shadowedClientServers,
   withClientServers,
+  clientConfigurationValuesEqual,
   type ClientConfigurationDocument,
 } from "./ClientConfigurationDocument.js";
 import { err, ok, type Result } from "../domain/result.js";
@@ -27,7 +28,6 @@ import { analysisErrorWithCleanupDependencies } from "../domain/analysisErrorCle
 import { ProviderCleanupError } from "../domain/providerCleanupError.js";
 import { copyFile, lstat, realpath, rm, rmdir } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
-import { isDeepStrictEqual } from "node:util";
 import { homeDirectoryFromEnvironment } from "../config/homeDirectory.js";
 import { basename, dirname } from "node:path";
 import {
@@ -891,7 +891,7 @@ export const systemUninstallHost = (
           const altersEffectiveRegistration =
             clientRegistrationOwnership(selected, client) === "owned"
               ? remaining !== undefined
-              : !isDeepStrictEqual(selected, remaining);
+              : !clientConfigurationValuesEqual(selected, remaining);
           if (altersEffectiveRegistration)
             return item(
               client.name,

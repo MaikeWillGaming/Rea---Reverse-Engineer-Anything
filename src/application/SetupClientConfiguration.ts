@@ -3,6 +3,7 @@ import { HOST_PLATFORM } from "../platform/HostPlatform.js";
 import { readClientPolicyBlock } from "./GeminiClientSettings.js";
 import {
   readClientConfigurationFiles,
+  claudeCodeImportConfiguration,
   inlineRegistrationEnvironment,
   inlineRegistrationOrigins,
   inlineRegistrationOverride,
@@ -256,6 +257,7 @@ const configureClientDocument = async (
   const fallback = await readSuppressedServers(
     client,
     platform,
+    environment,
     files.value,
     parsed,
   );
@@ -965,6 +967,7 @@ const inspectClientDocument = async (
       const fallback = await readSuppressedServers(
         client,
         platform,
+        providerEnvironment,
         files.value,
       );
       if (!fallback.ok) {
@@ -1029,6 +1032,7 @@ const inspectClientDocument = async (
     const fallback = await readSuppressedServers(
       client,
       platform,
+      providerEnvironment,
       files.value,
       parsed,
     );
@@ -1206,12 +1210,14 @@ const registrationOwnershipBlocker = (
 const readSuppressedServers = (
   client: SetupClient,
   platform: NodeJS.Platform,
+  overrides: SetupProviderEnvironment,
   sources: readonly ClientConfigurationSource[],
   parsed?: ClientConfigurationDocument,
 ): ReturnType<typeof readZcodeFallbackServers> =>
   client.claudeCodeImportPath === undefined
     ? readZcodeFallbackServers(client, platform, parsed)
     : admitClaudeCodeImport(client, client.claudeCodeImportPath, {
+        overrides,
         sources,
         parsed,
         platform,
@@ -1226,10 +1232,12 @@ const admitClaudeCodeImport = async (
   client: SetupClient,
   path: string,
   {
+    overrides,
     sources,
     parsed,
     platform,
   }: {
+    readonly overrides: SetupProviderEnvironment;
     readonly sources: readonly ClientConfigurationSource[];
     readonly parsed: ClientConfigurationDocument | undefined;
     readonly platform: NodeJS.Platform;
@@ -1253,13 +1261,19 @@ const admitClaudeCodeImport = async (
     text.value === undefined ? undefined : mimoCodeClaudeCodeImport(text.value);
   if (entry === undefined) return ok({});
   const ownership = clientRegistrationOwnership(entry, client);
-  return ownership === "owned"
-    ? ok({})
-    : err({
-        kind: "registration_ownership",
-        path,
-        detail: `MiMo Code imports the ${name} entry in Claude Code's ${path} until it has its own, and setup's entry would replace it. ${clientRegistrationOwnershipRemediation(ownership, [path])}`,
-      });
+  if (ownership !== "owned")
+    return err({
+      kind: "registration_ownership",
+      path,
+      detail: `MiMo Code imports the ${name} entry in Claude Code's ${path} until it has its own, and setup's entry would replace it. ${clientRegistrationOwnershipRemediation(ownership, [path])}`,
+    });
+  const { failure } = claudeCodeImportConfiguration(client, platform, {
+    native,
+    path,
+    entry,
+    overrides,
+  });
+  return failure === undefined ? ok({ [name]: entry }) : err(failure);
 };
 
 /** Admit the fallback only when the first native ZCode server would suppress it. */
