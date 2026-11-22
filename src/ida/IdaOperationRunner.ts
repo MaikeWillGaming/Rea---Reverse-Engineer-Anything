@@ -240,8 +240,7 @@ export class IdaOperationRunner {
         userMessage: message,
         conformsToInputContract: true,
         related: { operations: ["list_procedures", "search_procedures"] },
-        remediationAction:
-          "Choose an observed name or address from the current IDA inventory. CLI: rea search <path> . --kind procedures --mode regex --provider ida. MCP: use search_procedures or list_procedures. An inventory miss leaves the function's presence in the artifact unknown.",
+        remediationAction: `IDA couldn't resolve procedure ${JSON.stringify(query)} in this project. Search the procedure inventory for ${JSON.stringify(query)}. If you find a matching entry procedure, retry with its address. Use search_procedures with {"pattern":${JSON.stringify(query)}} or list_procedures. An empty search leaves the function's presence in the artifact unknown.`,
       },
       [
         {

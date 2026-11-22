@@ -568,4 +568,20 @@ describe("Hopper error catalogue", () => {
       });
     },
   );
+
+  it("projects actionable procedure resolution recovery for procedure operations on lookup miss", () => {
+    const error = new HopperRemoteError(7, "Cannot find procedure", {
+      operation: "procedure_address",
+      diagnosticType: "selector_not_found",
+    });
+    const projected = projectAnalysisError(error);
+    expect(projected.remediation.action).toContain(
+      "Hopper couldn't resolve the procedure in this document",
+    );
+    expect(projected.remediation.action).toContain("search_procedures");
+    expect(projected.details?.related_operations).toEqual([
+      "search_procedures",
+      "list_procedures",
+    ]);
+  });
 });
