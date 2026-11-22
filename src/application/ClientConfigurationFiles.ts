@@ -43,11 +43,13 @@ export type ClientConfigurationSource = ClientConfigurationDocument &
   (
     | {
         readonly sourcePath: string;
+        readonly importedFrom?: "claude_code";
         readonly inlineOrigin?: undefined;
         readonly scope?: ClientRegistrationScope;
       }
     | {
         readonly sourcePath?: undefined;
+        readonly importedFrom?: undefined;
         readonly inlineOrigin: ClientInlineConfiguration["origin"];
         readonly scope?: undefined;
       }
@@ -105,6 +107,7 @@ type ClientConfigurationLocation = Pick<
   | "registrationProfile"
   | "configPath"
   | "configPaths"
+  | "claudeCodeImportPath"
   | "configPathError"
   | "readOnlyLowerLayers"
   | "inlineConfiguration"
@@ -244,6 +247,45 @@ export const readClientConfigurationFiles = async (
         continue;
       const failure = validateFragment(path, source);
       if (failure !== undefined) return err(failure);
+    }
+  }
+  // A first native MiMo registration replaces the Claude import. Keep the import
+  // as a separate source so preview and apply use the same settings and owner.
+  const importPath = client.claudeCodeImportPath;
+  if (
+    writeOverrides !== undefined &&
+    importPath !== undefined &&
+    (effective === undefined ||
+      effectiveClientServer(effective, PRODUCT_IDENTITY.mcpServerKey) ===
+        undefined)
+  ) {
+    const text = await readConfigurationText(importPath, resources);
+    if (!text.ok) return text;
+    const entry =
+      text.value === undefined
+        ? undefined
+        : mimoCodeClaudeCodeImport(text.value);
+    if (entry !== undefined) {
+      const { document, failure } = claudeCodeImportConfiguration(
+        client,
+        platform,
+        {
+          native: undefined,
+          path: importPath,
+          entry,
+          overrides: writeOverrides,
+        },
+      );
+      return failure === undefined
+        ? ok([
+            ...documents.value,
+            {
+              ...document,
+              sourcePath: importPath,
+              importedFrom: "claude_code",
+            },
+          ])
+        : err(failure);
     }
   }
   const failure = configurationEnvironmentFailure(client, platform, {
@@ -388,10 +430,13 @@ export const effectiveClientConfiguration = (
       }
     | undefined,
   platform: NodeJS.Platform,
-): ClientConfigurationDocument | undefined => {
+):
+  | (ClientConfigurationDocument & { readonly importedFrom?: undefined })
+  | (ClientConfigurationSource & { readonly importedFrom: "claude_code" })
+  | undefined => {
   const documents =
     target === undefined
-      ? sources
+      ? sources.filter((source) => source.importedFrom === undefined)
       : [
           ...(target.client.configPaths ?? [target.client.configPath]).flatMap(
             (path) => {
@@ -404,7 +449,21 @@ export const effectiveClientConfiguration = (
           ),
           ...sources.filter(({ inlineOrigin }) => inlineOrigin !== undefined),
         ];
-  return mergeClientConfigurationDocuments(documents, platform);
+  const native = mergeClientConfigurationDocuments(documents, platform);
+  if (
+    native !== undefined &&
+    effectiveClientServer(native, PRODUCT_IDENTITY.mcpServerKey) !== undefined
+  )
+    return native;
+  return (
+    sources.find(
+      (
+        source,
+      ): source is ClientConfigurationSource & {
+        readonly importedFrom: "claude_code";
+      } => source.importedFrom === "claude_code",
+    ) ?? native
+  );
 };
 
 /** The client's read-only inline layers that set REA's entry. */
@@ -672,8 +731,8 @@ const claudeCodeImportCandidates = async (
 };
 
 /** Apply MiMo Code's converted Claude entry and validate the settings it would use. */
-export const claudeCodeImportConfiguration = (
-  client: SetupClient,
+const claudeCodeImportConfiguration = (
+  client: ClientConfigurationLocation,
   platform: NodeJS.Platform,
   {
     native,

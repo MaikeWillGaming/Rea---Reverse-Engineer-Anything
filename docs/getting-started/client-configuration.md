@@ -981,7 +981,8 @@ and uninstall never change project files.
 When none of its own files defines `rea`, MiMo Code imports the `rea` entry
 from Claude Code's `~/.claude.json`, then from the project's `.claude.json`.
 When setup replaces an owned user import with a native MiMo Code entry, it
-keeps the imported environment and leaves Claude Code's file untouched. Setup
+combines the imported environment with the selected settings before validating
+them and leaves Claude Code's file untouched. Setup
 refuses the change if another launcher owns that name or the resulting settings
 are invalid.
 
@@ -990,7 +991,9 @@ update leaves it to Claude Code's own refresh, and reports a stale imported
 entry instead when `CLAUDE_CONFIG_DIR` points Claude Code at another file.
 Uninstall removes REA's MiMo Code entries only when no enabled `rea` entry in
 `~/.claude.json` would take their place, or when the same run also removes
-that entry; otherwise it changes nothing and says why. Setting `MIMOCODE_DISABLE_CLAUDE_CODE` or
+that entry. If MiMo Code uses only an enabled, REA-owned import and Claude Code
+uninstall targets another profile, uninstall stops before removing files or
+purging data. Setting `MIMOCODE_DISABLE_CLAUDE_CODE` or
 `MIMOCODE_DISABLE_CLAUDE_CODE_MCP` to `true` or `1` turns the import off for
 MiMo Code and for REA.
 

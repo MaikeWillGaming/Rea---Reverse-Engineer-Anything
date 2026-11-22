@@ -1,3 +1,4 @@
+import { sameClientConfigurationFile } from "./ClientConfigPath.js";
 import { z } from "zod";
 import { RegularFileCleanupFailure } from "../filesystem/OwnedRegularFile.js";
 
@@ -190,7 +191,14 @@ export const existingMaintenanceScope = async (
         environment,
         systemPaths,
       ).find(({ name }) => name === importedFrom)?.configPath;
-      if (registration.state === "stale" && source !== registration.config_path)
+      if (
+        registration.state === "stale" &&
+        (source === undefined ||
+          !(await sameClientConfigurationFile(
+            source,
+            registration.config_path,
+          )))
+      )
         unresolved.push({
           ...registration,
           remediation: unmaintainedImportRemediation(registration, source),

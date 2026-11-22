@@ -3,7 +3,6 @@ import { HOST_PLATFORM } from "../platform/HostPlatform.js";
 import { readClientPolicyBlock } from "./GeminiClientSettings.js";
 import {
   readClientConfigurationFiles,
-  claudeCodeImportConfiguration,
   inlineRegistrationEnvironment,
   inlineRegistrationOrigins,
   inlineRegistrationOverride,
@@ -89,7 +88,6 @@ import {
 } from "./SupportedClients.js";
 import { errorMessage } from "../kernel/errorMessage.js";
 import { isRecord } from "../kernel/isRecord.js";
-import { mimoCodeClaudeCodeImport } from "./MimoCodeClaudeImport.js";
 
 export class ClientConfigurationCleanupRollbackFailure extends RegularFileCleanupFailure<string> {
   constructor(
@@ -172,27 +170,6 @@ const configureClientDocument = async (
   const format = client.format;
   if (format === undefined || format === "unsupported")
     return { status: "failed", reason: "readback" };
-  const files = await readClientConfigurationFiles(
-    client,
-    undefined,
-    platform,
-    { writeOverrides: environment },
-  );
-  if (!files.ok) {
-    throwCleanupFailure(files.error);
-    return { status: "failed", reason: "readback" };
-  }
-  const existing = files.value.find(
-    ({ sourcePath }) => sourcePath === client.configPath,
-  );
-  const editabilityError =
-    existing?.dialect === "dsh"
-      ? dshDocument(existing.document).editabilityError
-      : undefined;
-  if (editabilityError !== undefined)
-    return { status: "failed", reason: "readback" };
-  // Policy admission belongs to the transaction snapshot below, not the
-  // earlier layered discovery document.
   let snapshot:
     | Awaited<ReturnType<typeof readRegularFileTextSnapshot>>
     | undefined;
@@ -214,6 +191,29 @@ const configureClientDocument = async (
           : "{}"),
       format,
     );
+  } catch {
+    return { status: "failed", reason: "readback" };
+  }
+  const files = await readClientConfigurationFiles(
+    client,
+    undefined,
+    platform,
+    { writeOverrides: environment, targetDocument: parsed },
+  );
+  if (!files.ok) {
+    throwCleanupFailure(files.error);
+    return { status: "failed", reason: "readback" };
+  }
+  const existing = files.value.find(
+    ({ sourcePath }) => sourcePath === client.configPath,
+  );
+  const editabilityError =
+    existing?.dialect === "dsh"
+      ? dshDocument(existing.document).editabilityError
+      : undefined;
+  if (editabilityError !== undefined)
+    return { status: "failed", reason: "readback" };
+  try {
     parsed = clientConfigurationForWrite(parsed, files.value);
     const ownershipBlocker = registrationOwnershipBlocker(
       client,
@@ -254,13 +254,7 @@ const configureClientDocument = async (
     void cause;
     return { status: "failed", reason: "readback" };
   }
-  const fallback = await readSuppressedServers(
-    client,
-    platform,
-    environment,
-    files.value,
-    parsed,
-  );
+  const fallback = await readZcodeFallbackServers(client, platform, parsed);
   if (!fallback.ok) {
     if (fallback.error.kind !== "registration_ownership")
       throwCleanupFailure(fallback.error);
@@ -964,12 +958,7 @@ const inspectClientDocument = async (
       }
       if (policy.value !== undefined)
         return { status: "invalid", remediation: policy.value };
-      const fallback = await readSuppressedServers(
-        client,
-        platform,
-        providerEnvironment,
-        files.value,
-      );
+      const fallback = await readZcodeFallbackServers(client, platform);
       if (!fallback.ok) {
         if (fallback.error.kind !== "registration_ownership")
           throwCleanupFailure(fallback.error);
@@ -1029,13 +1018,7 @@ const inspectClientDocument = async (
       (await privateProfileCurrent(client, original))
     )
       return { status: "already_current" };
-    const fallback = await readSuppressedServers(
-      client,
-      platform,
-      providerEnvironment,
-      files.value,
-      parsed,
-    );
+    const fallback = await readZcodeFallbackServers(client, platform, parsed);
     if (!fallback.ok) {
       if (fallback.error.kind !== "registration_ownership")
         throwCleanupFailure(fallback.error);
@@ -1169,10 +1152,13 @@ const registrationOwnershipBlocker = (
     entries.push({
       value: effective.servers[name],
       // An inline layer is named by its origin; it has no path.
-      paths: [
-        ...(client.configPaths ?? [client.configPath]),
-        ...inlineRegistrationOrigins(client),
-      ],
+      paths:
+        effective.importedFrom === "claude_code"
+          ? [effective.sourcePath]
+          : [
+              ...(client.configPaths ?? [client.configPath]),
+              ...inlineRegistrationOrigins(client),
+            ],
     });
   const fragment = parsed.servers[name];
   // A layered policy fragment inherits its launcher. Classify the effective
@@ -1204,76 +1190,6 @@ const registrationOwnershipBlocker = (
       return clientRegistrationOwnershipRemediation(ownership, entry.paths);
   }
   return undefined;
-};
-
-/** Admit a first native server that suppresses another file's registrations. */
-const readSuppressedServers = (
-  client: SetupClient,
-  platform: NodeJS.Platform,
-  overrides: SetupProviderEnvironment,
-  sources: readonly ClientConfigurationSource[],
-  parsed?: ClientConfigurationDocument,
-): ReturnType<typeof readZcodeFallbackServers> =>
-  client.claudeCodeImportPath === undefined
-    ? readZcodeFallbackServers(client, platform, parsed)
-    : admitClaudeCodeImport(client, client.claudeCodeImportPath, {
-        overrides,
-        sources,
-        parsed,
-        platform,
-      });
-
-/**
- * MiMo Code imports Claude Code's `rea` entry until one of its own files
- * declares one, so setup's first entry replaces that import. REA writes only
- * MiMo Code's file and must own the entry it replaces.
- */
-const admitClaudeCodeImport = async (
-  client: SetupClient,
-  path: string,
-  {
-    overrides,
-    sources,
-    parsed,
-    platform,
-  }: {
-    readonly overrides: SetupProviderEnvironment;
-    readonly sources: readonly ClientConfigurationSource[];
-    readonly parsed: ClientConfigurationDocument | undefined;
-    readonly platform: NodeJS.Platform;
-  },
-): ReturnType<typeof readZcodeFallbackServers> => {
-  const name = PRODUCT_IDENTITY.mcpServerKey;
-  const native = effectiveClientConfiguration(
-    sources,
-    { client, document: parsed },
-    platform,
-  );
-  if (native !== undefined && effectiveClientServer(native, name) !== undefined)
-    return ok({});
-  const text = await readConfigurationText(path);
-  if (!text.ok)
-    return err({
-      ...text.error,
-      detail: `MiMo Code imports the ${name} entry in Claude Code's ${path} until it has its own, and that file could not be read. ${text.error.detail}`,
-    });
-  const entry =
-    text.value === undefined ? undefined : mimoCodeClaudeCodeImport(text.value);
-  if (entry === undefined) return ok({});
-  const ownership = clientRegistrationOwnership(entry, client);
-  if (ownership !== "owned")
-    return err({
-      kind: "registration_ownership",
-      path,
-      detail: `MiMo Code imports the ${name} entry in Claude Code's ${path} until it has its own, and setup's entry would replace it. ${clientRegistrationOwnershipRemediation(ownership, [path])}`,
-    });
-  const { failure } = claudeCodeImportConfiguration(client, platform, {
-    native,
-    path,
-    entry,
-    overrides,
-  });
-  return failure === undefined ? ok({ [name]: entry }) : err(failure);
 };
 
 /** Admit the fallback only when the first native ZCode server would suppress it. */
@@ -1503,8 +1419,10 @@ const clientConfigurationDesired = async (
   // Preserve explicitly configured server settings, never the ambient process
   // environment. The effective layered view validates precedence and supplies
   // timeout facts; the target file's fragment remains the value being written.
+  const writeSource =
+    effective?.importedFrom === "claude_code" ? effective : parsed;
   const environment = clientRegistrationEnvironment(
-    parsed,
+    writeSource,
     client,
     platform,
     writeEnvironment,
@@ -1516,9 +1434,9 @@ const clientConfigurationDesired = async (
     format,
     launcher,
     environment.value,
-    parsed === undefined
+    writeSource === undefined
       ? undefined
-      : effectiveClientServer(parsed, PRODUCT_IDENTITY.mcpServerKey),
+      : effectiveClientServer(writeSource, PRODUCT_IDENTITY.mcpServerKey),
     validated.value.timeoutInputs,
     launcherEnvironment,
     platform,

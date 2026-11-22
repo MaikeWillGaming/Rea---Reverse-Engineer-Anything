@@ -1,5 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 
 import { parse } from "jsonc-parser";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -427,6 +427,32 @@ describe("MiMo Code setup with a Claude Code import", () => {
     ).toBe("configured");
   });
 
+  it.each([false, true])(
+    "combines imported language and selected compiler before preview and apply (existing native file: %s)",
+    async (exists) => {
+      const { home, target } = await installedHome("rea-mimo-import-compiler-");
+      if (exists) await writeFile(target, "{}");
+      const client = await mimoRow(home);
+      const imported = join(home, ".claude.json");
+      const language = { REA_GHIDRA_LANGUAGE_ID: "x86:LE:64:default" };
+      const compiler = { REA_GHIDRA_COMPILER_SPEC_ID: "gcc" };
+      const original = JSON.stringify({
+        mcpServers: { rea: { ...claudeEntry, env: language } },
+      });
+      await writeFile(imported, original);
+      expect(
+        (await inspectClientConfiguration(client, compiler, command)).status,
+      ).toBe(exists ? "update" : "create");
+      expect(
+        (await configureClientConfiguration(client, compiler, command)).status,
+      ).toBe("configured");
+      expect(parse(await readFile(target, "utf8")).mcp.rea.environment).toEqual(
+        { ...language, ...compiler },
+      );
+      expect(await readFile(imported, "utf8")).toBe(original);
+    },
+  );
+
   it("keeps the settings of REA's imported Claude Code entry when setup gives MiMo Code its own", async () => {
     const { home, target } = await installedHome("rea-mimo-claude-settings-");
     const environment = {
@@ -490,6 +516,67 @@ describe("MiMo Code setup with a Claude Code import", () => {
 });
 
 describe("MiMo Code uninstall with a Claude Code import", () => {
+  it.each([false, true])(
+    "blocks purge when only an owned Claude import remains (existing native file: %s)",
+    async (exists) => {
+      const { home, target } = await installedHome("rea-mimo-only-import-");
+      if (exists) await writeFile(target, "{}");
+      const path = join(home, ".claude.json");
+      const environment = { CLAUDE_CONFIG_DIR: join(home, "other-profile") };
+      const host = systemUninstallHost(home, undefined, environment, platform);
+      const purgeData = vi.fn(async () => []);
+      const original = JSON.stringify({ mcpServers: { rea: claudeEntry } });
+      await writeFile(path, original);
+      const result = await runUninstall(true, { ...host, purgeData });
+      expect(result.status).toBe("failed");
+      expect(
+        result.items.filter(
+          ({ name, status }) => name === "mimo_code" && status === "failed",
+        ),
+      ).toEqual([
+        expect.objectContaining({ detail: expect.stringContaining(path) }),
+      ]);
+      expect(purgeData).not.toHaveBeenCalled();
+      expect(await readFile(path, "utf8")).toBe(original);
+    },
+  );
+
+  it.each([
+    "disabled",
+    "foreign",
+    "shadowed",
+    "opted-out",
+    "absent-client",
+  ] as const)(
+    "leaves an existing Claude entry alone when the import is %s",
+    async (state) => {
+      const home = await createTestTempDirectory("rea-mimo-kept-import-");
+      const directory = join(home, ".config", "mimocode");
+      if (state !== "absent-client")
+        await mkdir(directory, { recursive: true });
+      if (state === "shadowed")
+        await writeFile(
+          join(directory, "mimocode.json"),
+          JSON.stringify({ mcp: { rea: foreign } }),
+        );
+      const path = join(home, ".claude.json");
+      const entry =
+        state === "foreign"
+          ? { command: "/opt/other/rea", args: ["mcp"] }
+          : { ...claudeEntry, disabled: state === "disabled" };
+      const original = JSON.stringify({ mcpServers: { rea: entry } });
+      await writeFile(path, original);
+      const items = await uninstall(home, {
+        CLAUDE_CONFIG_DIR: join(home, "other-profile"),
+        ...(state === "opted-out"
+          ? { MIMOCODE_DISABLE_CLAUDE_CODE_MCP: "1" }
+          : {}),
+      });
+      expect(items.filter(({ status }) => status === "failed")).toEqual([]);
+      expect(await readFile(path, "utf8")).toBe(original);
+    },
+  );
+
   it("refuses to uninstall when removal would let MiMo Code import a Claude Code entry REA keeps", async () => {
     const { home, target } = await installedHome("rea-mimo-claude-expose-");
     const owned = JSON.stringify({ mcp: { rea: registration } });
@@ -524,7 +611,9 @@ describe("MiMo Code uninstall with a Claude Code import", () => {
       claude,
       JSON.stringify({ mcpServers: { rea: claudeEntry } }),
     );
-    const items = await uninstall(home);
+    const items = await uninstall(home, {
+      CLAUDE_CONFIG_DIR: relative(process.cwd(), home),
+    });
     for (const name of ["mimo_code", "claude_code"])
       expect(items).toContainEqual(
         expect.objectContaining({ name, status: "removed" }),
@@ -551,7 +640,7 @@ describe("Update maintenance of MiMo Code's Claude Code import", () => {
     const scope = await existingMaintenanceScope(
       home,
       command[1] ?? "",
-      {},
+      { CLAUDE_CONFIG_DIR: relative(process.cwd(), home) },
       {
         platform,
       },
