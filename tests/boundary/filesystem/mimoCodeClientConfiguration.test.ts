@@ -166,6 +166,20 @@ describe("MiMo Code registration lifecycle", () => {
     expect(parse(after).mcp).toEqual({ other });
   });
 
+  it("ignores the disabled key MiMo Code strips, whatever its value", async () => {
+    const { home, target } = await installedHome("rea-mimo-stripped-");
+    for (const disabled of ["false", true]) {
+      await writeFile(
+        target,
+        JSON.stringify({ mcp: { rea: { ...registration, disabled } } }),
+      );
+      expect(await doctor(home, {}, "user")).toMatchObject({
+        config_path: target,
+        state: "aligned",
+      });
+    }
+  });
+
   it("keeps a same-name entry REA does not own", async () => {
     const { home, target } = await installedHome("rea-mimo-foreign-");
     const original = JSON.stringify({ mcp: { rea: foreign } });
@@ -344,19 +358,18 @@ describe("MiMo Code's Claude Code import", () => {
     });
   });
 
+  const pinned = JSON.stringify({
+    mcpServers: {
+      rea: {
+        command: "npx",
+        args: ["-y", `${PRODUCT_IDENTITY.packageName}@3.2.0`, "mcp"],
+      },
+    },
+  });
+
   it("leaves an imported registration to Claude Code's own update maintenance", async () => {
     const { home } = await installedHome("rea-mimo-claude-update-");
-    await writeFile(
-      join(home, ".claude.json"),
-      JSON.stringify({
-        mcpServers: {
-          rea: {
-            command: "npx",
-            args: ["-y", `${PRODUCT_IDENTITY.packageName}@3.2.0`, "mcp"],
-          },
-        },
-      }),
-    );
+    await writeFile(join(home, ".claude.json"), pinned);
     const scope = await existingMaintenanceScope(
       home,
       command[1] ?? "",
@@ -367,5 +380,27 @@ describe("MiMo Code's Claude Code import", () => {
     );
     expect(scope.clients).toContain("claude_code");
     expect(scope.clients).not.toContain("mimo_code");
+    expect(scope).not.toHaveProperty("unresolved");
+  });
+
+  it("reports an imported entry update cannot refresh when Claude Code reads another file", async () => {
+    const { home } = await installedHome("rea-mimo-claude-config-dir-");
+    const imported = join(home, ".claude.json");
+    await writeFile(imported, pinned);
+    const scope = await existingMaintenanceScope(
+      home,
+      command[1] ?? "",
+      { CLAUDE_CONFIG_DIR: join(home, "claude-profile") },
+      { platform },
+    );
+    expect(scope.clients).not.toContain("mimo_code");
+    expect(scope.unresolved).toContainEqual(
+      expect.objectContaining({
+        client: "mimo_code",
+        config_path: imported,
+        state: "stale",
+        remediation: expect.stringContaining("rea setup --client mimo_code"),
+      }),
+    );
   });
 });

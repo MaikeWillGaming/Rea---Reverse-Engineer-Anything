@@ -944,9 +944,10 @@ every platform, `$XDG_CONFIG_HOME/mimocode` when `XDG_CONFIG_HOME` is set, or
 order. Like MiMo Code's own writer, setup edits the last of them that exists
 and creates `mimocode.jsonc` when none does. The entry is
 `{ "type": "local", "command": [...], "enabled": true }`; comments, other
-servers and other settings stay in place, and a second run changes nothing. A
-relative `MIMOCODE_HOME` or `XDG_CONFIG_HOME` depends on MiMo Code's working
-directory, so REA refuses it.
+servers and other settings stay in place, and a second run changes nothing.
+MiMo Code drops a `disabled` key, so only `enabled: false` turns the entry
+off. A relative `MIMOCODE_HOME` or `XDG_CONFIG_HOME` depends on MiMo Code's
+working directory, so REA refuses it.
 
 Doctor also reads the project files MiMo Code loads from the working directory
 and each parent folder: `mimocode.json` and `mimocode.jsonc`, then
@@ -957,10 +958,11 @@ and uninstall never change project files.
 When none of its own files defines `rea`, MiMo Code imports the `rea` entry
 from Claude Code's `~/.claude.json`, then from the project's `.claude.json`.
 Doctor reports that entry with the Claude Code path and says it is imported;
-update leaves it to Claude Code's own refresh. Uninstall removes REA's MiMo
-Code entries only when no enabled `rea` entry in `~/.claude.json` would take
-their place, or when the same run also removes that entry; otherwise it
-changes nothing and says why. Setting `MIMOCODE_DISABLE_CLAUDE_CODE` or
+update leaves it to Claude Code's own refresh, and reports a stale imported
+entry instead when `CLAUDE_CONFIG_DIR` points Claude Code at another file.
+Uninstall removes REA's MiMo Code entries only when no enabled `rea` entry in
+`~/.claude.json` would take their place, or when the same run also removes
+that entry; otherwise it changes nothing and says why. Setting `MIMOCODE_DISABLE_CLAUDE_CODE` or
 `MIMOCODE_DISABLE_CLAUDE_CODE_MCP` to `true` or `1` turns the import off for
 MiMo Code and for REA.
 
