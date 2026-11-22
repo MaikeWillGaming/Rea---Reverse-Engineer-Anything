@@ -45,6 +45,7 @@ import {
   windowsAppDataRoots,
 } from "./MsixPackageStorage.js";
 import { kiloProjectLocation } from "./McpRegistrationKiloLocations.js";
+import { mimoCodeImportsClaudeCodeServers } from "./MimoCodeClaudeImport.js";
 import type {
   McpRegistrationLocation,
   McpRegistrationLocationContext,
@@ -82,6 +83,12 @@ export interface SetupClient {
   readonly configPathFailure?: ConfigurationError;
   /** Same-scope fallback ZCode stops loading after its first native server. */
   readonly zcodeFallbackPath?: string;
+  /**
+   * Claude Code's user `.claude.json`, whose `rea` entry MiMo Code imports
+   * when none of its own layers declares one. Read-only; absent when MiMo
+   * Code's environment disables the import.
+   */
+  readonly claudeCodeImportPath?: string;
   readonly markerPath?: string;
   /**
    * Registration storage shared with other products. Its presence never proves
@@ -132,6 +139,7 @@ export interface SetupClient {
     | "fx"
     | "goose"
     | "kilo"
+    | "mimo_code"
     | "unsupported";
 }
 
@@ -239,6 +247,9 @@ interface ClientDefinitionBase {
   readonly format: NonNullable<SetupClient["format"]>;
   readonly quitBeforeSetup?: boolean;
   readonly zcodeFallbackPath?: (context: ClientPathContext) => string;
+  readonly claudeCodeImportPath?: (
+    context: ClientPathContext,
+  ) => string | undefined;
   readonly skillPath?: ClientPath;
   readonly configPaths?: (context: ClientPathContext) => readonly string[];
   readonly geminiSettings?: (
@@ -558,7 +569,7 @@ export const clientProjectConfigurationPaths = (
   const paths = platform === "win32" ? win32 : posix;
   if (client.format === "pi")
     return [paths.join(projectDirectory, ".pi", "mcp.json")];
-  if (client.format !== "opencode") return [];
+  if (client.format !== "opencode" && client.format !== "mimo_code") return [];
   const directories: string[] = [];
   let current = projectDirectory;
   for (;;) {
@@ -568,6 +579,21 @@ export const clientProjectConfigurationPaths = (
     current = parent;
   }
   directories.reverse();
+  if (client.format === "mimo_code") {
+    const names = ["mimocode.json", "mimocode.jsonc"];
+    // MiMo Code loads direct files root first, then visits its .mimocode
+    // folders nearest first, so the outermost folder loads last.
+    return [
+      ...directories.flatMap((directory) =>
+        names.map((name) => paths.join(directory, name)),
+      ),
+      ...[...directories]
+        .reverse()
+        .flatMap((directory) =>
+          names.map((name) => paths.join(directory, ".mimocode", name)),
+        ),
+    ];
+  }
   const names = ["opencode.json", "opencode.jsonc"];
   // OpenCode loads all direct files before visiting any nested .opencode directory.
   return [
@@ -635,6 +661,20 @@ const openCodeConfigurationPaths = (
   return paths;
 };
 
+/** Whether a configuration layer may exist; only a missing path is absent. */
+const layerPresent = (path: string): boolean => {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (cause: unknown) {
+    return !(
+      cause instanceof Error &&
+      "code" in cause &&
+      cause.code === "ENOENT"
+    );
+  }
+};
+
 const existingOpenCodeConfigPath = (context: ClientPathContext): string => {
   // The selected directory is loaded after an explicit file by OpenCode V1.
   const overrideDirectory = openCodeOverrideDirectory(context.env);
@@ -646,18 +686,7 @@ const existingOpenCodeConfigPath = (context: ClientPathContext): string => {
         ? [explicitPath]
         : openCodeDirectoryConfigPaths(opencodeDirectory(context));
   return (
-    [...candidates].reverse().find((path) => {
-      try {
-        lstatSync(path);
-        return true;
-      } catch (cause: unknown) {
-        return !(
-          cause instanceof Error &&
-          "code" in cause &&
-          cause.code === "ENOENT"
-        );
-      }
-    }) ??
+    [...candidates].reverse().find(layerPresent) ??
     resolve(
       overrideDirectory !== undefined
         ? join(overrideDirectory, "opencode.json")
@@ -665,6 +694,83 @@ const existingOpenCodeConfigPath = (context: ClientPathContext): string => {
     )
   );
 };
+
+/**
+ * MiMo Code's global folder (`resolveMimocodeHome`): a non-empty
+ * `MIMOCODE_HOME` selects `<MIMOCODE_HOME>/config`, otherwise xdg-basedir's
+ * `XDG_CONFIG_HOME || ~/.config` on every platform. MiMo Code rejects a
+ * relative `MIMOCODE_HOME` and resolves a relative `XDG_CONFIG_HOME` against
+ * its own working directory, so setup refuses both.
+ */
+const mimoCodeConfigDirectory = ({
+  home,
+  platform,
+  env,
+}: ClientPathContext): ClientPathResult => {
+  if (env.MIMOCODE_HOME) {
+    const root = absoluteClientRoot(
+      env.MIMOCODE_HOME,
+      "MIMOCODE_HOME",
+      "MiMo Code",
+      platform,
+    );
+    return root.ok
+      ? ok(appendCallerPath(root.value, "config", platform))
+      : root;
+  }
+  const xdg = env.XDG_CONFIG_HOME
+    ? absoluteClientRoot(
+        env.XDG_CONFIG_HOME,
+        "XDG_CONFIG_HOME",
+        "MiMo Code",
+        platform,
+      )
+    : ok(appendCallerPath(home, ".config", platform));
+  return xdg.ok ? ok(appendCallerPath(xdg.value, "mimocode", platform)) : xdg;
+};
+
+/** MiMo Code's global files, which it merges in this order. */
+const mimoCodeGlobalFiles = (
+  directory: string,
+  platform: NodeJS.Platform,
+): readonly [string, string, string] => [
+  appendCallerPath(directory, "config.json", platform),
+  appendCallerPath(directory, "mimocode.json", platform),
+  appendCallerPath(directory, "mimocode.jsonc", platform),
+];
+
+/**
+ * MiMo Code's own writer edits the last global file that exists, which is
+ * also the one it loads last, and creates `mimocode.jsonc` otherwise.
+ */
+const mimoCodeLocation = (
+  context: ClientPathContext,
+): Result<ClientLocation, ClientPathFailure> => {
+  const directory = mimoCodeConfigDirectory(context);
+  if (!directory.ok) return directory;
+  const files = mimoCodeGlobalFiles(directory.value, context.platform);
+  return ok({
+    configPath: [...files].reverse().find(layerPresent) ?? files[2],
+    markerPath: directory.value,
+  });
+};
+
+const mimoCodeConfigPaths = (context: ClientPathContext): readonly string[] => {
+  const directory = mimoCodeConfigDirectory(context);
+  return directory.ok
+    ? mimoCodeGlobalFiles(directory.value, context.platform)
+    : [];
+};
+
+/** MiMo Code reads Claude Code's file from `HOME`, ignoring `CLAUDE_CONFIG_DIR`. */
+const mimoCodeClaudeCodeImportPath = ({
+  home,
+  platform,
+  env,
+}: ClientPathContext): string | undefined =>
+  mimoCodeImportsClaudeCodeServers(env)
+    ? appendCallerPath(home, ".claude.json", platform)
+    : undefined;
 
 const geminiSettings = ({
   home,
@@ -1922,6 +2028,19 @@ export const SUPPORTED_CLIENT_DEFINITIONS = [
     format: "kilo",
   }),
   defineClient({
+    name: "mimo_code",
+    registrationConnection: {
+      kind: "flat",
+      fields: ["url"],
+      stdio: [{ kind: "required-enum", field: "type", values: ["local"] }],
+    },
+    displayName: "MiMo Code",
+    location: mimoCodeLocation,
+    configPaths: mimoCodeConfigPaths,
+    claudeCodeImportPath: mimoCodeClaudeCodeImportPath,
+    format: "mimo_code",
+  }),
+  defineClient({
     name: "grok_bot",
     registrationConnection: {
       kind: "unavailable",
@@ -2083,6 +2202,7 @@ export const supportedClients = (
         definition.format === "opencode"
           ? openCodeUserOverridePaths(context)
           : [];
+      const claudeCodeImportPath = definition.claudeCodeImportPath?.(context);
       return {
         name: definition.name,
         registrationProfile: definition.registrationProfile,
@@ -2113,6 +2233,7 @@ export const supportedClients = (
         ...(definition.zcodeFallbackPath === undefined
           ? {}
           : { zcodeFallbackPath: definition.zcodeFallbackPath(context) }),
+        ...(claudeCodeImportPath === undefined ? {} : { claudeCodeImportPath }),
         markerPath,
         ...(msixPackage === undefined ? {} : { msixPackage }),
         ...(definition.quitBeforeSetup === true

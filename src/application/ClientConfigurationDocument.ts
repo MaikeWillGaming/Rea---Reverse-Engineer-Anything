@@ -32,6 +32,7 @@ import {
 import { z } from "zod";
 
 import { err, ok, type Result } from "../domain/result.js";
+import { isRecord } from "../kernel/isRecord.js";
 import { PRODUCT_IDENTITY } from "../identity.js";
 import type { SetupClient } from "./SupportedClients.js";
 import { compareUnicodeCodePoints } from "../domain/unicodeCodePointOrder.js";
@@ -132,6 +133,7 @@ export const clientConfigurationServersKey = (
     case "opencode":
     case "zcode":
     case "kilo":
+    case "mimo_code":
       return "mcp";
     case "amp":
       return "amp.mcpServers";
@@ -238,6 +240,8 @@ const CLIENT_CONFIGURATION_READERS = {
   amp: JSONC_READER,
   zed: JSONC_READER,
   kilo: JSONC_READER,
+  // MiMo Code parses every configuration file as JSONC with trailing commas.
+  mimo_code: JSONC_READER,
   // Copilot CLI and fx load strict JSON; admitted JSONC is rewritten.
   copilot_cli: STRICT_JSON_REPAIRED_READER,
   copilot_cli_project: STRICT_JSON_REPAIRED_READER,
@@ -385,6 +389,19 @@ const fxConfigurationServersKey = (
   return legacy ? "mcp" : "mcpServers";
 };
 
+/** MiMo Code strips disabled from each MCP server before it merges its files. */
+const mimoCodeServers = (
+  servers: Record<string, unknown>,
+): Record<string, unknown> =>
+  Object.fromEntries(
+    Object.entries(servers).map(([name, value]) => {
+      if (!isRecord(value) || !Object.hasOwn(value, "disabled"))
+        return [name, value];
+      const { disabled: _disabled, ...entry } = value;
+      return [name, entry];
+    }),
+  );
+
 export const parseClientConfiguration = (
   text: string,
   format: ClientConfigurationFormat | undefined,
@@ -430,7 +447,10 @@ export const parseClientConfiguration = (
       };
   }
   const environmentKey =
-    format === "opencode" || format === "fx" || format === "kilo"
+    format === "opencode" ||
+    format === "fx" ||
+    format === "kilo" ||
+    format === "mimo_code"
       ? "environment"
       : format === "goose"
         ? "envs"
@@ -472,7 +492,7 @@ export const parseClientConfiguration = (
     return {
       document,
       ...(requiresRewrite === undefined ? {} : { requiresRewrite }),
-      servers,
+      servers: format === "mimo_code" ? mimoCodeServers(servers) : servers,
       serversPath: [serversKey],
       dialect: format,
       environmentKey,
@@ -2097,6 +2117,7 @@ export const clientRegistrationLauncherEntry = (
     case "opencode_v2":
     case "fx":
     case "kilo":
+    case "mimo_code":
       return { type: "local", command: [...command] };
     case "goose":
       return { type: "stdio", cmd: executable, args };
@@ -2133,12 +2154,23 @@ export const clientRegistrationEntry = (
               enabled: true,
               timeout: 300,
             }
-          : ["opencode", "commandcode", "hermes", "fx", "kilo"].includes(format)
+          : [
+                "opencode",
+                "commandcode",
+                "hermes",
+                "fx",
+                "kilo",
+                "mimo_code",
+              ].includes(format)
             ? { enabled: true }
             : {};
-  const environmentKey = ["opencode", "opencode_v2", "fx", "kilo"].includes(
-    format,
-  )
+  const environmentKey = [
+    "opencode",
+    "opencode_v2",
+    "fx",
+    "kilo",
+    "mimo_code",
+  ].includes(format)
     ? "environment"
     : format === "goose"
       ? "envs"
